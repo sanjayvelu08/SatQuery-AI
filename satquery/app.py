@@ -1,12 +1,15 @@
 """
-SatQuery AI — Gradio Web UI (v3, Loop 6).
+SatQuery AI — Gradio Web UI (v4, Loop 8).
 
-Changes from v2:
-  - Annotated image output (SAR bounding boxes, optical grounding)
-  - Result panel shows: analysis type, model used, answer, visual evidence
-  - Robust edge-case handling (8 scenarios)
-  - Improved demo scenarios with annotated images
-  - Clearer layout with separate image and annotated image outputs
+UI/UX Redesign:
+  - Professional scientific/ISRO branding with custom CSS
+  - Compact header with branding + demo selector
+  - Image + query + analyze on left; results + visual evidence on right
+  - Inline timing/status in result header (no separate textboxes)
+  - Compact horizontal query history
+  - Conditional annotated image (shown when available, empty state otherwise)
+
+Backend is FROZEN — no changes to pipeline, router, VLM, SAR, or demo data.
 
 Run:  python -X utf8 -m satquery.app
 URL:  http://localhost:7860
@@ -63,6 +66,17 @@ _MODEL_LABELS = {
     "general": "EarthDial 4B RGB (VLM)",
 }
 
+_INTENT_COLORS = {
+    "caption": "#2563EB",
+    "vqa": "#7C3AED",
+    "detect": "#DC2626",
+    "grounding": "#EA580C",
+    "classification": "#D97706",
+    "change": "#6B7280",
+    "sar": "#059669",
+    "general": "#475569",
+}
+
 
 def _format_answer(result: PipelineResult) -> str:
     """Format pipeline result as rich Markdown with model info."""
@@ -90,7 +104,7 @@ def _format_answer(result: PipelineResult) -> str:
 
     bbox_note = ""
     if bbox_count > 0:
-        bbox_note = f"\n\n---\n*📍 {bbox_count} region(s) with bounding coordinates — see annotated image →*"
+        bbox_note = f"\n\n---\n*📍 {bbox_count} region(s) with bounding coordinates — see Visual Evidence panel →*"
 
     # SAR-specific extras
     sar_note = ""
@@ -107,25 +121,25 @@ def _format_answer(result: PipelineResult) -> str:
 
 
 def _format_timing(result: PipelineResult) -> str:
-    """Format timing info."""
+    """Format timing info as compact inline text."""
     if result.elapsed_vlm_s == 0 and result.elapsed_total_s == 0:
-        return "⚡ Instant (pre-computed demo)"
+        return "⚡ Instant"
     parts = []
     if result.elapsed_route_ms > 0:
-        parts.append(f"Route: {result.elapsed_route_ms:.0f}ms")
+        parts.append(f"Route {result.elapsed_route_ms:.0f}ms")
     if result.elapsed_vlm_s > 0:
-        parts.append(f"VLM: {result.elapsed_vlm_s:.1f}s")
+        parts.append(f"VLM {result.elapsed_vlm_s:.1f}s")
     if result.elapsed_total_s > 0:
-        parts.append(f"Total: {result.elapsed_total_s:.1f}s")
-    return "⏱️ " + " | ".join(parts) if parts else ""
+        parts.append(f"Total {result.elapsed_total_s:.1f}s")
+    return " · ".join(parts) if parts else ""
 
 
 def _format_status(result: PipelineResult) -> str:
     """Format status line."""
     if not result.supported:
-        return f"⚠️ {result.intent} — feature coming soon"
+        return f"⚠️ {result.intent} — coming soon"
     model = result.model_used or "unknown"
-    return f"✅ Analyzed ({result.intent}) via {model}"
+    return f"✅ {result.intent} via {model}"
 
 
 # ── Edge-case validation ──────────────────────────────────────────
@@ -187,7 +201,7 @@ def analyze(image, query: str, use_demo: str, history_state: list) -> tuple:
     Run the SatQuery pipeline on an image + query.
 
     Returns:
-        (answer_md, timing, status, image_preview, annotated_preview,
+        (answer_md, timing_md, status_md, image_preview, annotated_preview,
          history_md, history_state)
     """
     # ── Demo mode ─────────────────────────────────────────────────
@@ -275,11 +289,11 @@ def analyze(image, query: str, use_demo: str, history_state: list) -> tuple:
 
 
 def _format_history(history: list[str]) -> str:
-    """Format history entries as Markdown."""
+    """Format history entries as compact horizontal chips."""
     if not history:
         return "*No queries yet.*"
     entries = list(reversed(history))
-    return "\n\n---\n\n".join(entries)
+    return " &nbsp;&nbsp;|&nbsp;&nbsp; ".join(entries)
 
 
 # ── Demo loader ───────────────────────────────────────────────────
@@ -295,6 +309,152 @@ def load_demo(demo_name: str):
     return None, ""
 
 
+# ── Custom CSS ────────────────────────────────────────────────────
+
+_CSS = """
+/* ── Header ──────────────────────────────────────────────── */
+.satquery-header {
+    background: linear-gradient(135deg, #0F2B3D 0%, #0D7377 100%);
+    color: white;
+    padding: 16px 24px;
+    border-radius: 10px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+.satquery-header .title-area {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+.satquery-header .logo {
+    font-size: 1.6em;
+    line-height: 1;
+}
+.satquery-header h1 {
+    margin: 0;
+    font-size: 1.4em;
+    font-weight: 700;
+    color: white;
+    letter-spacing: -0.02em;
+}
+.satquery-header .subtitle {
+    font-size: 0.82em;
+    color: rgba(255,255,255,0.75);
+    margin-top: 2px;
+}
+.satquery-header .controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+/* ── Cards ───────────────────────────────────────────────── */
+.input-card, .result-card {
+    background: white;
+    border: 1px solid #E2E8F0;
+    border-radius: 10px;
+    padding: 16px;
+}
+.input-card {
+    border-top: 3px solid #0D7377;
+}
+.result-card {
+    border-top: 3px solid #1B2A4A;
+}
+
+/* ── Section labels ──────────────────────────────────────── */
+.section-label {
+    font-size: 0.9em;
+    font-weight: 600;
+    color: #475569;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 8px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #E2E8F0;
+}
+
+/* ── Visual Evidence placeholder ─────────────────────────── */
+.evidence-placeholder {
+    background: #F8FAFC;
+    border: 2px dashed #CBD5E1;
+    border-radius: 8px;
+    padding: 40px 20px;
+    text-align: center;
+    color: #94A3B8;
+    font-size: 0.9em;
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+.evidence-placeholder .icon {
+    font-size: 2em;
+    opacity: 0.5;
+}
+
+/* ── Timing chip ─────────────────────────────────────────── */
+.timing-chip {
+    display: inline-block;
+    background: #F1F5F9;
+    color: #475569;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.82em;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+/* ── Status chip ─────────────────────────────────────────── */
+.status-chip {
+    display: inline-block;
+    background: #ECFDF5;
+    color: #065F46;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.82em;
+}
+
+/* ── History ─────────────────────────────────────────────── */
+.history-bar {
+    background: #F8FAFC;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 0.88em;
+    color: #64748B;
+}
+
+/* ── Footer ──────────────────────────────────────────────── */
+.footer-bar {
+    text-align: center;
+    padding: 10px 0;
+    font-size: 0.8em;
+    color: #94A3B8;
+    border-top: 1px solid #E2E8F0;
+    margin-top: 8px;
+}
+
+/* ── Analyze button ──────────────────────────────────────── */
+.analyze-btn {
+    background: #0D7377 !important;
+    color: white !important;
+    font-weight: 600 !important;
+    border: none !important;
+    border-radius: 6px !important;
+    padding: 10px 24px !important;
+}
+.analyze-btn:hover {
+    background: #0A5E61 !important;
+}
+"""
+
+
 # ── Build Gradio UI ───────────────────────────────────────────────
 
 def build_ui() -> gr.Blocks:
@@ -303,112 +463,126 @@ def build_ui() -> gr.Blocks:
     with gr.Blocks(
         title="SatQuery AI — Remote Sensing Assistant",
         theme=gr.themes.Soft(),
+        css=_CSS,
     ) as app:
-        gr.Markdown(
-            "# 🛰️ SatQuery AI\n"
-            "**Interactive Vision-Language Assistant for Remote Sensing Image Analysis**\n"
-            "*ISRO Problem Statement SIH26167 — Smart India Hackathon 2026*\n"
+
+        # ── Branded Header ───────────────────────────────────
+        gr.HTML("""
+        <div class="satquery-header">
+            <div class="title-area">
+                <span class="logo">🛰️</span>
+                <div>
+                    <h1>SatQuery AI</h1>
+                    <div class="subtitle">ISRO SIH26167 · Remote Sensing Vision-Language Assistant</div>
+                </div>
+            </div>
+            <div class="controls">
+                <span style="font-size:0.82em; color:rgba(255,255,255,0.6);">
+                    EarthDial 4B + YOLOv8 SAR · RTX 3050
+                </span>
+            </div>
+        </div>
+        """)
+
+        # ── Demo Quick-Select ────────────────────────────────
+        with gr.Row():
+            demo_dropdown = gr.Dropdown(
+                choices=demo_names,
+                value="None",
+                label="📋 Quick Demo — pre-computed scenarios",
+                info="Instant results · no model loading required",
+                scale=4,
+            )
+            gr.HTML("", scale=1)  # spacer
+
+        # ── Main Two-Column Layout ──────────────────────────
+        with gr.Row(equal_height=False):
+
+            # ── LEFT: Inputs ────────────────────────────────
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.HTML('<div class="section-label">🛰️ Satellite Image</div>')
+                    image_input = gr.Image(
+                        type="filepath",
+                        label=None,
+                        height=300,
+                    )
+
+                with gr.Group():
+                    gr.HTML('<div class="section-label">💬 Query</div>')
+                    query_input = gr.Textbox(
+                        label=None,
+                        placeholder=(
+                            "Describe this image · Are there buildings? · "
+                            "Detect ships in SAR"
+                        ),
+                        lines=2,
+                    )
+                    with gr.Row():
+                        analyze_btn = gr.Button(
+                            "🔍 Analyze",
+                            variant="primary",
+                            elem_classes=["analyze-btn"],
+                        )
+                        clear_btn = gr.Button(
+                            "Clear",
+                            variant="secondary",
+                        )
+
+                # ── Visual Evidence (always visible) ─────────
+                with gr.Group():
+                    gr.HTML('<div class="section-label">🖼️ Visual Evidence</div>')
+                    annotated_output = gr.Image(
+                        label=None,
+                        height=300,
+                        interactive=False,
+                        value=None,
+                    )
+
+            # ── RIGHT: Results ──────────────────────────────
+            with gr.Column(scale=1):
+                with gr.Group():
+                    gr.HTML('<div class="section-label">📊 Analysis Result</div>')
+                    status_output = gr.Markdown(
+                        value="*Upload a satellite image and ask a question, "
+                              "or select a demo scenario above.*"
+                    )
+                    timing_output = gr.Markdown(value="")
+                    answer_output = gr.Markdown(
+                        value=(
+                            "**Supported query types:**\n\n"
+                            "| Type | Example |\n"
+                            "|------|---------|\n"
+                            "| 📝 Captioning | *\"Describe this satellite image\"* |\n"
+                            "| ❓ Visual QA | *\"Are there buildings here?\"* |\n"
+                            "| 🎯 Detection | *\"Find all structures\"* |\n"
+                            "| 🏷️ Classification | *\"Classify the land cover\"* |\n"
+                            "| 📍 Grounding | *\"Locate key features\"* |\n"
+                            "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |"
+                        ),
+                    )
+
+        # ── History Bar ─────────────────────────────────────
+        gr.HTML('<div class="section-label" style="margin-top:8px;">📜 Query History</div>')
+        history_output = gr.Markdown(
+            value="*No queries yet.*",
+            elem_classes=["history-bar"],
         )
 
-        with gr.Row():
-            # ── Left column: inputs ───────────────────────────────
-            with gr.Column(scale=1):
-                gr.Markdown("### 📋 Quick Demo")
-                demo_dropdown = gr.Dropdown(
-                    choices=demo_names,
-                    value="None",
-                    label="Select a pre-computed scenario",
-                    info="Instant results — no VLM loading required",
-                )
+        # ── Footer ──────────────────────────────────────────
+        gr.HTML("""
+        <div class="footer-bar">
+            🛰️ SatQuery AI · EarthDial 4B (InternVL + Phi-3) · YOLOv8 SAR ·
+            NVIDIA RTX 3050 (4 GB) ·
+            <a href="https://github.com/sanjayvelu08/SatQuery-AI"
+               style="color:#0D7377;">GitHub</a>
+        </div>
+        """)
 
-                gr.Markdown("---")
-
-                image_input = gr.Image(
-                    type="filepath",
-                    label="🛰️ Upload satellite image (Sentinel-2, Landsat, SAR)",
-                    height=280,
-                )
-
-                query_input = gr.Textbox(
-                    label="💬 Ask a question",
-                    placeholder=(
-                        "e.g., Describe this image, Are there buildings?, "
-                        "Detect ships in this SAR image"
-                    ),
-                    lines=2,
-                )
-
-                with gr.Row():
-                    analyze_btn = gr.Button(
-                        "🔍 Analyze Image",
-                        variant="primary",
-                        size="lg",
-                    )
-                    clear_btn = gr.Button(
-                        "🗑️ Clear",
-                        variant="secondary",
-                        size="sm",
-                    )
-
-                status_output = gr.Textbox(
-                    label="Status",
-                    interactive=False,
-                )
-
-            # ── Right column: results ─────────────────────────────
-            with gr.Column(scale=1):
-                gr.Markdown("### 📊 Analysis Result")
-                answer_output = gr.Markdown(
-                    value=(
-                        "*Upload a satellite image and ask a question, "
-                        "or select a demo scenario from the left panel.*\n\n"
-                        "**Supported query types:**\n"
-                        "- 📝 *\"Describe this satellite image\"* — Captioning\n"
-                        "- ❓ *\"Are there buildings here?\"* — Visual QA\n"
-                        "- 🎯 *\"Find all structures\"* — Detection\n"
-                        "- 🏷️ *\"Classify the land cover\"* — Classification\n"
-                        "- 📍 *\"Locate key features\"* — Grounding\n"
-                        "- 📡 *\"Detect ships in this SAR image\"* — SAR Vessel Detection"
-                    ),
-                )
-                timing_output = gr.Textbox(
-                    label="Timing",
-                    interactive=False,
-                )
-
-                # Annotated image output
-                gr.Markdown("### 🖼️ Visual Evidence")
-                annotated_output = gr.Image(
-                    label="Annotated image (bounding boxes)",
-                    height=280,
-                    interactive=False,
-                )
-
-        # ── History section ───────────────────────────────────────
-        gr.Markdown("---")
-        with gr.Row():
-            with gr.Column(scale=2):
-                gr.Markdown("### 📜 Query History (Last 5)")
-                history_output = gr.Markdown(
-                    value="*No queries yet.*",
-                )
-            with gr.Column(scale=1):
-                gr.Markdown("### ℹ️ About")
-                gr.Markdown(
-                    "**SatQuery AI** uses:\n"
-                    "- **EarthDial 4B** (InternVL + Phi-3) for optical RS analysis\n"
-                    "- **YOLOv8** for SAR vessel detection\n\n"
-                    "**Hardware:** NVIDIA RTX 3050 (4 GB VRAM)\n"
-                    "**Imagery:** Optical (Sentinel-2, Landsat) + SAR\n\n"
-                    "**Architecture:**\n"
-                    "Query → Intent Router → VLM/SAR Tool → Structured Result\n"
-                    "with annotated visual evidence"
-                )
-
-        # ── State ─────────────────────────────────────────────────
+        # ── State ───────────────────────────────────────────
         history_state = gr.State([])
 
-        # ── Wire events ───────────────────────────────────────────
+        # ── Wire events ─────────────────────────────────────
         demo_dropdown.change(
             fn=load_demo,
             inputs=[demo_dropdown],
@@ -432,9 +606,20 @@ def build_ui() -> gr.Blocks:
                 "None",         # demo
                 "*No queries yet.*",  # history
                 [],             # history state
-                "*Ready for analysis.*",  # answer
+                (
+                    "**Supported query types:**\n\n"
+                    "| Type | Example |\n"
+                    "|------|---------|\n"
+                    "| 📝 Captioning | *\"Describe this satellite image\"* |\n"
+                    "| ❓ Visual QA | *\"Are there buildings here?\"* |\n"
+                    "| 🎯 Detection | *\"Find all structures\"* |\n"
+                    "| 🏷️ Classification | *\"Classify the land cover\"* |\n"
+                    "| 📍 Grounding | *\"Locate key features\"* |\n"
+                    "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |"
+                ),
                 "",             # timing
-                "",             # status
+                "*Upload a satellite image and ask a question, "
+                "or select a demo scenario above.*",  # status
                 None,           # annotated image
             )
 
