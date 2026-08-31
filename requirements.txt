@@ -1,0 +1,32 @@
+# SatQuery AI — Pinned Dependencies
+# Tested on: Windows 11, Python 3.12.10, RTX 3050 (4GB VRAM)
+# Last verified: September 1, 2026
+
+# Core ML (pinned for EarthDial 4B compatibility — do NOT upgrade without testing)
+torch>=2.0.0
+torchvision>=0.15.0
+transformers==4.37.2
+tokenizers==0.15.1
+huggingface-hub==0.23.5
+peft==0.7.0
+bitsandbytes>=0.41.0
+accelerate>=0.25.0
+
+# Web UI
+gradio>=4.0.0
+
+# Image processing
+Pillow>=10.0.0
+
+# Utilities
+numpy>=1.24.0
+
+# NOTE: The following are required by EarthDial but installed via its own setup:
+# - sentencepiece (build dependency, may need 0.1.99 for Windows)
+# - timm
+# - decord
+# - einops
+# - opencv-python (installed automatically)
+#
+# These are accessed via sys.path in vlm.py, not as satquery dependencies.
+# See EarthDial/pyproject.toml for the full list.

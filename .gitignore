@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+sar_venv/
+venv/
+.venv/
+env/
+
+# Model checkpoints (large files, download separately)
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# EarthDial cloned repo (download separately)
+EarthDial/
+
+# SARDet-100K cloned repo (not used, broken on Windows)
+SARDet_100K/
+
+# Generated annotated images
+*_annotated.jpg
+*_annotated.png
+
+# Temporary test files
+test_earthdial.py
+test_keyword_router.py
+loop2_results.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+/tmp/
