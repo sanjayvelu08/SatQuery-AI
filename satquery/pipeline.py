@@ -33,7 +33,9 @@ class PipelineResult:
     annotated_image: str | None = None  # path to annotated image with bboxes
     sar_result: SARResult | None = None  # raw SAR detection data
     change_result: object | None = None  # ChangeDetectionResult from bit_tool
+    joint_result: object | None = None  # JointAnalysisResult from fusion
     image_t2_path: str | None = None  # second image for change detection
+    image_sar_path: str | None = None  # SAR image for joint analysis
     elapsed_route_ms: float = 0.0
     elapsed_vlm_s: float = 0.0
     elapsed_total_s: float = 0.0
@@ -55,9 +57,14 @@ class PipelineResult:
         }
         if self.image_t2_path:
             d["image_t2_path"] = self.image_t2_path
+        if self.image_sar_path:
+            d["image_sar_path"] = self.image_sar_path
         if self.change_result is not None:
             cr = self.change_result
             d["change_result"] = cr.to_dict() if hasattr(cr, "to_dict") else str(cr)
+        if self.joint_result is not None:
+            jr = self.joint_result
+            d["joint_result"] = jr.to_dict() if hasattr(jr, "to_dict") else str(jr)
         return d
 
     def format(self) -> str:
@@ -107,10 +114,12 @@ class SatQueryPipeline:
     def run(
         self, image_path: str, query: str,
         image_t2_path: str | None = None,
+        image_sar_path: str | None = None,
     ) -> PipelineResult:
         """Execute the full pipeline for one (image, query) pair.
 
         For change detection, image_t2_path must be provided.
+        For joint optical+SAR analysis, image_sar_path must be provided.
         """
         t_total = time.time()
 
@@ -119,7 +128,216 @@ class SatQueryPipeline:
         route: RouteResult = classify(query)
         elapsed_route = (time.time() - t0) * 1000  # ms
 
-        # ── Step 1.5: Change intent validation ────────────────────
+        # ── Step 1.5: Joint analysis ────────────────────────────
+        if route.primary_intent == "joint_analysis":
+            from .evidence import (
+                OpticalEvidence, SAREvidence, ExecutionTraceStep,
+                JointAnalysisResult,
+            )
+            from .fusion import (
+                fuse_evidence, compute_confidence,
+                build_optical_prompt_with_sar_context,
+                run_joint_interpretation,
+            )
+            import os
+
+            trace_steps: list[ExecutionTraceStep] = []
+            t_joint = time.time()
+
+            # ── Validate inputs ─────────────────────────────────
+            t_val = time.time()
+            val_errors = []
+            if not image_path:
+                val_errors.append("Optical image is required for joint analysis.")
+            if not image_sar_path:
+                val_errors.append("SAR image is required for joint analysis.")
+            for label, path in [("Optical", image_path), ("SAR", image_sar_path)]:
+                if path and not os.path.exists(path):
+                    val_errors.append(f"{label} image not found: {path}")
+                elif path:
+                    try:
+                        from PIL import Image
+                        Image.open(path).verify()
+                    except Exception:
+                        val_errors.append(f"{label} image is corrupt or unreadable.")
+            if not query or not query.strip():
+                val_errors.append("No query provided.")
+            val_ms = (time.time() - t_val) * 1000
+
+            trace_steps.append(ExecutionTraceStep(
+                step=2, name="validate", tool="input_validator",
+                status="ok" if not val_errors else "error",
+                duration_ms=round(val_ms, 1),
+                input_summary=f"optical={'✓' if image_path else '✗'} sar={'✓' if image_sar_path else '✗'} query={'✓' if query else '✗'}",
+                output_summary="; ".join(val_errors) if val_errors else "All inputs valid",
+                error="; ".join(val_errors) if val_errors else None,
+            ))
+
+            if val_errors:
+                joint_ms = (time.time() - t_joint) * 1000
+                result = PipelineResult(
+                    query=query, image_path=image_path, image_sar_path=image_sar_path,
+                    intent=route.primary_intent, all_intents=route.all_intents,
+                    supported=False,
+                    unsupported_reason="\n".join(val_errors),
+                    elapsed_route_ms=elapsed_route,
+                    elapsed_total_s=round(time.time() - t_total, 1),
+                )
+                self.history.add(result)
+                return result
+
+            # ── Step 3: SAR detection ───────────────────────────
+            t_sar = time.time()
+            from .sar_tool import run_sar_detection, format_sar_response
+            sar_raw = run_sar_detection(image_sar_path)
+            sar_ms = (time.time() - t_sar) * 1000
+
+            sar_evidence = SAREvidence(
+                source="yolov8_sar_vessel",
+                image_path=image_sar_path,
+                num_detections=sar_raw.num_detections,
+                inference_time_ms=sar_raw.inference_time_ms,
+                gpu_vram_mb=sar_raw.gpu_vram_mb,
+                success=sar_raw.success,
+                error=sar_raw.error,
+                detection_summary=format_sar_response(sar_raw),
+            )
+
+            trace_steps.append(ExecutionTraceStep(
+                step=3, name="sar_detect", tool="yolov8_sar",
+                status="ok" if sar_raw.success else "error",
+                duration_ms=round(sar_ms, 1),
+                input_summary=f"SAR image: {os.path.basename(image_sar_path)}",
+                output_summary=f"{sar_raw.num_detections} vessel(s) detected" if sar_raw.success else (sar_raw.error or "failed"),
+                error=sar_raw.error,
+            ))
+
+            # ── Step 4: Optical analysis ────────────────────────
+            t_opt = time.time()
+            sar_summary_for_prompt = (
+                sar_evidence.detection_summary
+                if sar_evidence.success and sar_evidence.detection_summary
+                else "No SAR detections."
+            )
+            optical_prompt = build_optical_prompt_with_sar_context(
+                original_query=query,
+                sar_detection_summary=sar_summary_for_prompt,
+                sar_capabilities=sar_evidence.capabilities,
+                sar_limitations=sar_evidence.limitations,
+            )
+            optical_result = self.vlm.query(image_path, optical_prompt)
+            optical_ms = (time.time() - t_opt) * 1000
+
+            optical_evidence = OpticalEvidence(
+                source="earthdial_4b",
+                answer=optical_result.answer,
+                intent="joint_context",
+                prompt_sent=optical_prompt,
+                image_path=image_path,
+                elapsed_s=optical_result.elapsed_s,
+                success=optical_result.model_loaded,
+            )
+
+            trace_steps.append(ExecutionTraceStep(
+                step=4, name="optical_analyze", tool="earthdial_4b",
+                status="ok" if optical_evidence.success else "error",
+                duration_ms=round(optical_ms, 1),
+                input_summary=f"Optical image: {os.path.basename(image_path)}",
+                output_summary=f"{len(optical_evidence.answer)} chars response",
+            ))
+
+            # ── Step 5: Evidence fusion ──────────────────────────
+            t_fuse = time.time()
+            fused = fuse_evidence(optical_evidence, sar_evidence)
+            fuse_ms = (time.time() - t_fuse) * 1000
+
+            trace_steps.append(ExecutionTraceStep(
+                step=5, name="fuse", tool="evidence_fusion",
+                status="ok", duration_ms=round(fuse_ms, 1),
+                input_summary=f"optical_ok={optical_evidence.success} sar_ok={sar_evidence.success}",
+                output_summary=f"{len(fused.joint_capabilities)} capabilities, {len(fused.unresolved_gaps)} gaps",
+            ))
+
+            # ── Step 6: Joint interpretation ─────────────────────
+            t_interp = time.time()
+            joint_answer, interp_ms = run_joint_interpretation(
+                vlm=self.vlm,
+                original_query=query,
+                optical_evidence=optical_evidence,
+                sar_evidence=sar_evidence,
+            )
+            interp_ms_real = (time.time() - t_interp) * 1000
+
+            trace_steps.append(ExecutionTraceStep(
+                step=6, name="interpret", tool="earthdial_4b",
+                status="ok", duration_ms=round(interp_ms_real, 1),
+                input_summary="optical + sar evidence",
+                output_summary=f"{len(joint_answer)} chars joint answer",
+            ))
+
+            # ── Step 7: Confidence ───────────────────────────────
+            t_conf = time.time()
+            confidence, conf_reasoning = compute_confidence(fused, query)
+            conf_ms = (time.time() - t_conf) * 1000
+
+            trace_steps.append(ExecutionTraceStep(
+                step=7, name="confidence", tool="confidence_calc",
+                status="ok", duration_ms=round(conf_ms, 1),
+                input_summary="evidence quality factors",
+                output_summary=f"reliability={confidence:.2f}",
+            ))
+
+            # ── Assemble result ──────────────────────────────────
+            joint_ms = (time.time() - t_joint) * 1000
+
+            # SAR annotated image (if detections found)
+            sar_annotated = None
+            if sar_raw.success and sar_raw.num_detections > 0:
+                try:
+                    sar_annotated = create_annotated_image(
+                        image_sar_path, sar_evidence.detection_summary, "sar"
+                    )
+                except Exception:
+                    pass
+
+            joint_result = JointAnalysisResult(
+                query=query,
+                optical_evidence=optical_evidence,
+                sar_evidence=sar_evidence,
+                fused_evidence=fused,
+                joint_answer=joint_answer,
+                confidence=confidence,
+                confidence_reasoning=conf_reasoning,
+                trace=trace_steps,
+                sar_annotated=sar_annotated,
+                total_ms=round(joint_ms, 0),
+                sar_ms=round(sar_ms, 0),
+                optical_ms=round(optical_ms, 0),
+                fusion_ms=round(fuse_ms, 0),
+                joint_interpretation_ms=round(interp_ms_real, 0),
+                models_used=["YOLOv8 SAR Vessel Detector", "EarthDial 4B RGB"],
+            )
+
+            result = PipelineResult(
+                query=query,
+                image_path=image_path,
+                image_sar_path=image_sar_path,
+                intent=route.primary_intent,
+                all_intents=route.all_intents,
+                supported=True,
+                answer=joint_result.format_markdown(),
+                model_used="EarthDial 4B + YOLOv8 SAR (Joint)",
+                annotated_image=sar_annotated or optical_evidence.image_path,
+                sar_result=sar_raw,
+                joint_result=joint_result,
+                elapsed_route_ms=elapsed_route,
+                elapsed_vlm_s=optical_result.elapsed_s + interp_ms,
+                elapsed_total_s=round(time.time() - t_total, 1),
+            )
+            self.history.add(result)
+            return result
+
+        # ── Step 1.6: Change intent validation ────────────────────
         if route.primary_intent == "change":
             if not image_t2_path:
                 result = PipelineResult(

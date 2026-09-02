@@ -19,6 +19,14 @@ from dataclasses import dataclass
 _INTENT_RULES: list[tuple[str, list[str], str, str]] = [
     # Order matters: more specific intents first to avoid false matches
     (
+        "joint_analysis",
+        ["optical and sar", "sar and optical", "optical sar",
+         "sar optical", "sar image and optical", "optical image and sar",
+         "radar and optical", "optical and radar"],
+        None,
+        "Joint optical + SAR analysis (requires both image types)",
+    ),
+    (
         "change",
         ["change", "difference", "before", "after", "temporal",
          "compare", "diff", "changed", "changed between"],
@@ -121,6 +129,7 @@ class RouteResult:
     prompt: str | None
     supported: bool
     reason: str = ""
+    detected_modalities: list[str] | None = None  # e.g. ["optical", "sar"]
 
 
 def classify(query: str) -> RouteResult:
@@ -141,6 +150,13 @@ def classify(query: str) -> RouteResult:
     primary = all_intents[0]
 
     # ── Determine prompt & support status ─────────────────────────
+    if primary == "joint_analysis":
+        return RouteResult(
+            query=query, primary_intent=primary, all_intents=all_intents,
+            prompt=None, supported=True, reason="",
+            detected_modalities=["optical", "sar"],
+        )
+
     if primary == "change":
         return RouteResult(
             query=query, primary_intent=primary, all_intents=all_intents,
