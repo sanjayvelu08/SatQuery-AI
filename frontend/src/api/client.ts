@@ -5,10 +5,19 @@ const API_BASE = '';
 export async function analyzeImage(
   image: File,
   query: string,
+  imageT2?: File | null,
+  imageSar?: File | null,
 ): Promise<AnalyzeResponse> {
   const formData = new FormData();
   formData.append('image', image);
   formData.append('query', query);
+
+  if (imageT2) {
+    formData.append('image_t2', imageT2);
+  }
+  if (imageSar) {
+    formData.append('image_sar', imageSar);
+  }
 
   const res = await fetch(`${API_BASE}/api/analyze`, {
     method: 'POST',
@@ -57,7 +66,6 @@ export async function checkHealth(): Promise<{ status: string; vram: Record<stri
 
 export function getAnnotatedUrl(path: string | null): string | null {
   if (!path) return null;
-  // Backend returns relative path like "annotated/xxx.jpg"
   if (path.startsWith('http')) return path;
-  return `${API_BASE}/${path}`;
+  return `${API_BASE}${path}`;
 }

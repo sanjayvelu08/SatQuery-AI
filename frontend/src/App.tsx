@@ -12,14 +12,11 @@ export default function App() {
   const [screen, setScreen] = useState<Screen>('landing');
   const [showAbout, setShowAbout] = useState(false);
   const [demos, setDemos] = useState<DemoScenario[]>([]);
-  
 
-  // Fetch demos on mount
   useEffect(() => {
     fetchDemos()
       .then(setDemos)
       .catch(() => {
-        // Fallback: hardcoded demo data from Python backend
         console.warn('Could not fetch demos from API, using built-in fallback data');
       });
   }, []);
@@ -28,13 +25,24 @@ export default function App() {
     setScreen('workspace');
   }, []);
 
-  const handleAnalyze = useCallback(async (image: File, query: string): Promise<AnalyzeResponse> => {
-    return analyzeImage(image, query);
-  }, []);
+  const handleAnalyze = useCallback(
+    async (
+      image: File,
+      query: string,
+      imageT2?: File | null,
+      imageSar?: File | null,
+    ): Promise<AnalyzeResponse> => {
+      return analyzeImage(image, query, imageT2, imageSar);
+    },
+    [],
+  );
 
-  const handleAnalyzeDemo = useCallback(async (demo: DemoScenario): Promise<AnalyzeResponse> => {
-    return analyzeDemo(demo.name);
-  }, []);
+  const handleAnalyzeDemo = useCallback(
+    async (demo: DemoScenario): Promise<AnalyzeResponse> => {
+      return analyzeDemo(demo.name);
+    },
+    [],
+  );
 
   return (
     <div className="min-h-screen flex flex-col bg-bg-primary">

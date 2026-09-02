@@ -8,6 +8,7 @@ export const INTENT_COLORS: Record<IntentType, string> = {
   classification: '#FFA726',
   change: '#78909C',
   sar: '#26A69A',
+  joint_analysis: '#7C4DFF',
   general: '#78909C',
 };
 
@@ -19,6 +20,7 @@ export const INTENT_LABELS: Record<IntentType, string> = {
   classification: 'Classification',
   change: 'Change Detection',
   sar: 'SAR Analysis',
+  joint_analysis: 'Joint Analysis',
   general: 'General',
 };
 
@@ -30,6 +32,7 @@ export const INTENT_ICONS: Record<IntentType, string> = {
   classification: '🏷️',
   change: '🔄',
   sar: '📡',
+  joint_analysis: '🔗',
   general: '💬',
 };
 
@@ -39,6 +42,8 @@ export const MODEL_LABELS: Record<string, string> = {
   'EarthDial 4B RGB (VLM + Grounding)': 'EarthDial 4B RGB (VLM + Grounding)',
   'YOLOv8 SAR Vessel Detector': 'YOLOv8 SAR Vessel Detector',
   'YOLOv8 SAR': 'YOLOv8 SAR Vessel Detector',
+  'EarthDial 4B + YOLOv8 SAR (Joint)': 'EarthDial + SAR (Joint)',
+  'BIT-CD (LEVIR-CD pretrained)': 'BIT-CD Change Detection',
 };
 
 export const CAPABILITY_CARDS = [
