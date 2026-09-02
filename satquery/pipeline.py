@@ -188,7 +188,6 @@ class SatQueryPipeline:
 
             # ── Step 3: SAR detection ───────────────────────────
             t_sar = time.time()
-            from .sar_tool import run_sar_detection, format_sar_response
             sar_raw = run_sar_detection(image_sar_path)
             sar_ms = (time.time() - t_sar) * 1000
 
