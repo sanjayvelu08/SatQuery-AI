@@ -144,12 +144,8 @@ def classify(query: str) -> RouteResult:
     if primary == "change":
         return RouteResult(
             query=query, primary_intent=primary, all_intents=all_intents,
-            prompt=None, supported=False,
-            reason=(
-                "Change detection requires two images (bi-temporal comparison). "
-                "This feature is not yet implemented. "
-                "Please provide a single-image query instead."
-            ),
+            prompt=None, supported=True,
+            reason="",
         )
 
     if primary == "sar":
