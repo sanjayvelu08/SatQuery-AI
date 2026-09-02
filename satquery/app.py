@@ -30,6 +30,7 @@ if ROOT not in sys.path:
 from satquery.pipeline import SatQueryPipeline, PipelineResult
 from satquery.demos import get_demo_list, get_demo_by_name
 from satquery.visualize import create_annotated_image
+from satquery.bit_tool import get_bit_tool, unload_bit_tool
 
 # ── Global state ──────────────────────────────────────────────────
 pipeline: SatQueryPipeline | None = None
@@ -196,9 +197,16 @@ def _validate_inputs(image, query: str) -> tuple[bool, PipelineResult | None]:
 
 # ── Core analyze function ─────────────────────────────────────────
 
-def analyze(image, query: str, use_demo: str, history_state: list) -> tuple:
+def analyze(image, image_t2, query: str, use_demo: str, history_state: list) -> tuple:
     """
     Run the SatQuery pipeline on an image + query.
+
+    Args:
+        image: Primary satellite image (T1 for change detection, or sole image).
+        image_t2: Second image for change detection (optional).
+        query: User query string.
+        use_demo: Demo dropdown selection.
+        history_state: Current query history.
 
     Returns:
         (answer_md, timing_md, status_md, image_preview, annotated_preview,
@@ -258,7 +266,7 @@ def analyze(image, query: str, use_demo: str, history_state: list) -> tuple:
 
     # ── Live mode ─────────────────────────────────────────────────
     try:
-        result = get_pipeline().run(image, query)
+        result = get_pipeline().run(image, query, image_t2_path=image_t2 or None)
     except Exception as e:
         err = PipelineResult(
             query=query, image_path=image, intent="error",
@@ -507,6 +515,16 @@ def build_ui() -> gr.Blocks:
                         label=None,
                         height=300,
                     )
+                    gr.HTML(
+                        '<div class="section-label" style="margin-top:8px;">'
+                        '🔄 Change Detection (optional)</div>'
+                    )
+                    image_t2_input = gr.Image(
+                        type="filepath",
+                        label=None,
+                        height=200,
+                        placeholder="Upload a second (later) image for change detection",
+                    )
 
                 with gr.Group():
                     gr.HTML('<div class="section-label">💬 Query</div>')
@@ -558,7 +576,8 @@ def build_ui() -> gr.Blocks:
                             "| 🎯 Detection | *\"Find all structures\"* |\n"
                             "| 🏷️ Classification | *\"Classify the land cover\"* |\n"
                             "| 📍 Grounding | *\"Locate key features\"* |\n"
-                            "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |"
+                            "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |\n"
+                            "| 🔄 Change Detection | *\"What changed between these two images?\"* (requires T2 image) |"
                         ),
                     )
 
@@ -591,7 +610,7 @@ def build_ui() -> gr.Blocks:
 
         analyze_args = dict(
             fn=analyze,
-            inputs=[image_input, query_input, demo_dropdown, history_state],
+            inputs=[image_input, image_t2_input, query_input, demo_dropdown, history_state],
             outputs=[answer_output, timing_output, status_output,
                      image_input, annotated_output, history_output, history_state],
         )
@@ -602,6 +621,7 @@ def build_ui() -> gr.Blocks:
         def clear_all():
             return (
                 None,           # image
+                None,           # image_t2
                 "",             # query
                 "None",         # demo
                 "*No queries yet.*",  # history
@@ -615,7 +635,8 @@ def build_ui() -> gr.Blocks:
                     "| 🎯 Detection | *\"Find all structures\"* |\n"
                     "| 🏷️ Classification | *\"Classify the land cover\"* |\n"
                     "| 📍 Grounding | *\"Locate key features\"* |\n"
-                    "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |"
+                    "| 📡 SAR Detection | *\"Detect ships in this SAR image\"* |\n"
+                    "| 🔄 Change Detection | *\"What changed between these two images?\"* |"
                 ),
                 "",             # timing
                 "*Upload a satellite image and ask a question, "
@@ -625,7 +646,7 @@ def build_ui() -> gr.Blocks:
 
         clear_btn.click(
             fn=clear_all,
-            outputs=[image_input, query_input, demo_dropdown,
+            outputs=[image_input, image_t2_input, query_input, demo_dropdown,
                      history_output, history_state,
                      answer_output, timing_output, status_output,
                      annotated_output],

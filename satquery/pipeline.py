@@ -32,12 +32,14 @@ class PipelineResult:
     model_used: str = ""  # e.g. "EarthDial 4B", "YOLOv8 SAR"
     annotated_image: str | None = None  # path to annotated image with bboxes
     sar_result: SARResult | None = None  # raw SAR detection data
+    change_result: object | None = None  # ChangeDetectionResult from bit_tool
+    image_t2_path: str | None = None  # second image for change detection
     elapsed_route_ms: float = 0.0
     elapsed_vlm_s: float = 0.0
     elapsed_total_s: float = 0.0
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "query": self.query,
             "image_path": self.image_path,
             "intent": self.intent,
@@ -51,6 +53,12 @@ class PipelineResult:
             "elapsed_vlm_s": self.elapsed_vlm_s,
             "elapsed_total_s": self.elapsed_total_s,
         }
+        if self.image_t2_path:
+            d["image_t2_path"] = self.image_t2_path
+        if self.change_result is not None:
+            cr = self.change_result
+            d["change_result"] = cr.to_dict() if hasattr(cr, "to_dict") else str(cr)
+        return d
 
     def format(self) -> str:
         """Human-readable formatted output."""
@@ -96,14 +104,72 @@ class SatQueryPipeline:
         self.vlm = vlm or SatQueryVLM()
         self.history = QueryHistory(max_size=max_history)
 
-    def run(self, image_path: str, query: str) -> PipelineResult:
-        """Execute the full pipeline for one (image, query) pair."""
+    def run(
+        self, image_path: str, query: str,
+        image_t2_path: str | None = None,
+    ) -> PipelineResult:
+        """Execute the full pipeline for one (image, query) pair.
+
+        For change detection, image_t2_path must be provided.
+        """
         t_total = time.time()
 
         # ── Step 1: Route ─────────────────────────────────────────
         t0 = time.time()
         route: RouteResult = classify(query)
         elapsed_route = (time.time() - t0) * 1000  # ms
+
+        # ── Step 1.5: Change intent validation ────────────────────
+        if route.primary_intent == "change":
+            if not image_t2_path:
+                result = PipelineResult(
+                    query=query, image_path=image_path, intent=route.primary_intent,
+                    all_intents=route.all_intents, supported=False,
+                    unsupported_reason=(
+                        "**Two images required for change detection.**\n\n"
+                        "Please upload both a **Before (T1)** and **After (T2)** image, "
+                        "then enter your change query."
+                    ),
+                    elapsed_route_ms=elapsed_route,
+                    elapsed_total_s=round(time.time() - t_total, 1),
+                )
+                self.history.add(result)
+                return result
+
+            # Run BIT-CD change detection
+            from .bit_tool import get_bit_tool
+            import os
+
+            output_dir = os.path.join(
+                os.path.dirname(__file__), "..", "change_output"
+            )
+            bit = get_bit_tool()
+            change_result = bit.detect(
+                image_t1_path=image_path,
+                image_t2_path=image_t2_path,
+                output_dir=output_dir,
+            )
+
+            # Use overlay as annotated image if available
+            annotated = change_result.overlay_path
+
+            result = PipelineResult(
+                query=query,
+                image_path=image_path,
+                image_t2_path=image_t2_path,
+                intent=route.primary_intent,
+                all_intents=route.all_intents,
+                supported=change_result.success,
+                answer=change_result.format_markdown() if change_result.success else f"Error: {change_result.error}",
+                unsupported_reason="" if change_result.success else (change_result.error or "Change detection failed"),
+                model_used="BIT-CD (LEVIR-CD pretrained)",
+                annotated_image=annotated,
+                change_result=change_result,
+                elapsed_route_ms=elapsed_route,
+                elapsed_total_s=round(time.time() - t_total, 1),
+            )
+            self.history.add(result)
+            return result
 
         # ── Step 2: SAR intent → SAR tool ────────────────────────
         if route.primary_intent == "sar":
