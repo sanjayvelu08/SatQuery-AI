@@ -106,6 +106,7 @@ export interface AnalyzeResponse {
   annotated_image_url: string | null;
   change_result: ChangeResult | null;
   joint_result: JointResult | null;
+  trace: ExecutionTraceStep[];
   elapsed_route_ms: number;
   elapsed_vlm_s: number;
   elapsed_total_s: number;

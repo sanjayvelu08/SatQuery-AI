@@ -17,6 +17,7 @@ import { LoadingOverlay } from '../components/LoadingOverlay';
 import { DetectionTable } from '../components/DetectionTable';
 import { ChangeResultPanel } from '../components/ChangeResultPanel';
 import { JointAnalysisPanel } from '../components/JointAnalysisPanel';
+import { TraceTimeline } from '../components/TraceTimeline';
 
 const MODE_CONFIG: Record<AnalysisMode, {
   label: string;
@@ -602,6 +603,11 @@ export function AnalysisWorkspace({
                   <span className="text-[11px] font-mono text-text-muted">
                     GPU: {result.sar_result.gpu_vram_mb.toFixed(0)} MB VRAM
                   </span>
+                )}
+
+                {/* Execution trace — single/change/SAR paths (joint already renders it in JointAnalysisPanel) */}
+                {result.intent !== 'joint_analysis' && result.trace && result.trace.length > 0 && (
+                  <TraceTimeline steps={result.trace} totalMs={result.elapsed_total_s * 1000} />
                 )}
               </div>
             ) : (

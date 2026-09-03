@@ -200,6 +200,7 @@ async def analyze(
             "elapsed_vlm_s": 0,
             "elapsed_total_s": 0,
             "sar_result": None,
+            "trace": [],
         }
 
     # ── Live mode ───────────────────────────────────────────────
@@ -263,6 +264,15 @@ async def analyze(
             "elapsed_vlm_s": result.elapsed_vlm_s,
             "elapsed_total_s": result.elapsed_total_s,
             "sar_result": sar_result,
+            "trace": [
+                {
+                    "step": t.step, "name": t.name, "tool": t.tool,
+                    "status": t.status, "duration_ms": t.duration_ms,
+                    "input_summary": t.input_summary,
+                    "output_summary": t.output_summary,
+                }
+                for t in result.trace
+            ],
         }
 
     except Exception as e:
