@@ -53,15 +53,26 @@ class SatQueryVLM:
 
     # ── Inference ─────────────────────────────────────────────────
 
-    def query(self, image_path: str, prompt: str) -> InferenceResult:
-        """Run a single VLM query via isolated subprocess."""
+    def query(
+        self,
+        image_path: str,
+        prompt: str,
+        max_tokens: int = 50,
+        num_beams: int = 2,
+    ) -> InferenceResult:
+        """Run a single VLM query via isolated subprocess.
+
+        max_tokens/num_beams default to 50/2 for backwards compatibility;
+        richer interpretation tasks (e.g. change interpretation) may request
+        a higher token budget explicitly.
+        """
         t0 = time.time()
 
         result: EarthDialResult = run_earthdial(
             image_path=image_path,
             prompt=prompt,
-            max_tokens=50,
-            num_beams=2,
+            max_tokens=max_tokens,
+            num_beams=num_beams,
             timeout=300,
         )
 

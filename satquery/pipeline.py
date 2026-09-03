@@ -197,11 +197,32 @@ class SatQueryPipeline:
         route: RouteResult = classify(query)
         elapsed_route = (time.time() - t0) * 1000
 
+        # Two temporal images → bi-temporal change request. The frontend
+        # change mode always supplies image + image_t2, and semantic change
+        # questions ("Has construction increased?") may not contain change
+        # keywords. So when image_t2 is supplied, treat the request as change
+        # UNLESS it is an explicit optical+SAR joint request (image + image_sar).
+        # Joint and single-image behavior are never overridden.
+        reroute_note = ""
+        if image_t2_path and route.primary_intent not in ("change", "joint_analysis"):
+            original_intent = route.primary_intent
+            route = RouteResult(
+                query=query, primary_intent="change",
+                all_intents=route.all_intents + ["change"],
+                prompt=None, supported=True,
+                reason=f"Rerouted from '{original_intent}': image_t2 supplied.",
+            )
+            reroute_note = (
+                f" rerouted_to=change from={original_intent} (image_t2 supplied)"
+            )
+
         step_num += 1
         trace.append(self._make_step(
             step_num, "route", "keyword_router", "ok", elapsed_route,
             input_summary=f"query='{query[:60]}'",
-            output_summary=f"intent={route.primary_intent} supported={route.supported}",
+            output_summary=(
+                f"intent={route.primary_intent} supported={route.supported}{reroute_note}"
+            ),
         ))
 
         # ── Step 2: Validate ──────────────────────────────────
@@ -407,11 +428,78 @@ class SatQueryPipeline:
                 output_summary="overlay + bbox images saved",
             ))
 
-        # Final answer
+        # ── Change interpretation (one optional EarthDial call) ──
+        from .change_interpret import run_change_interpretation, should_interpret
+
+        interpret_text: str | None = None
+        if change_result.success:
+            step_num += 1
+            if not change_result.change_detected:
+                trace.append(self._make_step(
+                    step_num, "change_interpret", "earthdial_change_interpreter",
+                    "skipped", 0.0,
+                    input_summary=f"query='{query[:60]}'",
+                    output_summary="no change detected; nothing to interpret",
+                ))
+            else:
+                wants_interp, skip_reason = should_interpret(query)
+                if not wants_interp:
+                    trace.append(self._make_step(
+                        step_num, "change_interpret", "earthdial_change_interpreter",
+                        "skipped", 0.0,
+                        input_summary=f"query='{query[:60]}'",
+                        output_summary=skip_reason or "interpretation not requested",
+                    ))
+                else:
+                    t0 = time.time()
+                    interp_error = ""
+                    try:
+                        interp_answer, _interp_s = run_change_interpretation(
+                            vlm=self.vlm, t1_path=image_path, t2_path=image_t2_path,
+                            change_result=change_result, query=query,
+                        )
+                    except Exception as exc:  # never fail the whole request
+                        interp_answer, interp_error = None, f"{type(exc).__name__}: {exc}"
+                    interp_ms = (time.time() - t0) * 1000
+                    ok = bool(interp_answer and interp_answer.strip())
+                    if ok:
+                        interpret_text = interp_answer
+                    trace.append(self._make_step(
+                        step_num, "change_interpret", "earthdial_change_interpreter",
+                        "ok" if ok else "failed", interp_ms,
+                        input_summary=(
+                            f"composite(T1|T2) + {change_result.num_regions} region(s), "
+                            f"{change_result.change_pct:.1f}% change"
+                        ),
+                        output_summary=(
+                            f"{len(interpret_text)} chars interpretation"
+                            if ok else "interpretation failed; BIT-CD statistics preserved"
+                        ),
+                        error=None if ok else (interp_error or "EarthDial model unavailable"),
+                    ))
+
+        # Final answer: BIT-CD evidence + interpretation (when available)
+        answer = (
+            change_result.format_markdown()
+            if change_result.success else f"Error: {change_result.error}"
+        )
+        if interpret_text:
+            answer = (
+                answer
+                + "\n\n---\n\n"
+                + "**🧠 What the changes appear to be (EarthDial)**\n\n"
+                + interpret_text.strip()
+                + "\n\n_Interpretation is qualitative visual description grounded in the "
+                "BIT-CD change regions. It is not a semantic change classification, "
+                "contains no object counts or physical-area estimates, and carries "
+                "no geospatial coordinates._"
+            )
         step_num += 1
         trace.append(self._make_step(
             step_num, "final_answer", "pipeline", "ok", 0,
-            input_summary="bit_cd output",
+            input_summary=(
+                "bit_cd output + change interpretation" if interpret_text else "bit_cd output"
+            ),
             output_summary=change_result.summary if change_result.success else "error",
         ))
 
@@ -421,7 +509,7 @@ class SatQueryPipeline:
             query=query, image_path=image_path, image_t2_path=image_t2_path,
             intent=route.primary_intent, all_intents=route.all_intents,
             supported=change_result.success,
-            answer=change_result.format_markdown() if change_result.success else f"Error: {change_result.error}",
+            answer=answer,
             unsupported_reason="" if change_result.success else (change_result.error or "Change detection failed"),
             model_used="BIT-CD (LEVIR-CD pretrained)",
             annotated_image=annotated, change_result=change_result,

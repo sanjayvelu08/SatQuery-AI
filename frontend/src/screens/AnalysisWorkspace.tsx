@@ -218,6 +218,50 @@ export function AnalysisWorkspace({
     (mode !== 'change' || imageT2File) &&
     (mode !== 'joint' || imageSarFile);
 
+  const renderAnswerMarkdown = (answer: string) => (
+    <div className="prose prose-invert prose-sm max-w-none">
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          table: ({ children }) => (
+            <div className="overflow-x-auto my-3 rounded-lg border border-border">
+              <table className="w-full text-sm">{children}</table>
+            </div>
+          ),
+          th: ({ children }) => (
+            <th className="px-3 py-2 text-left text-[11px] font-semibold text-text-secondary uppercase bg-accent-teal/8 border-b border-border">
+              {children}
+            </th>
+          ),
+          td: ({ children }) => (
+            <td className="px-3 py-2 text-sm text-text-primary border-b border-border/50">
+              {children}
+            </td>
+          ),
+          p: ({ children }) => (
+            <p className="text-sm text-text-secondary leading-relaxed mb-2">{children}</p>
+          ),
+          strong: ({ children }) => (
+            <strong className="text-text-primary font-semibold">{children}</strong>
+          ),
+          em: ({ children }) => (
+            <em className="text-text-muted text-xs">{children}</em>
+          ),
+          h3: ({ children }) => (
+            <h3 className="text-sm font-semibold text-text-primary mt-4 mb-2">{children}</h3>
+          ),
+          ul: ({ children }) => (
+            <ul className="text-sm text-text-secondary space-y-1 mb-2 ml-4 list-disc">{children}</ul>
+          ),
+          li: ({ children }) => <li>{children}</li>,
+          hr: () => <hr className="border-border my-3" />,
+        }}
+      >
+        {answer}
+      </ReactMarkdown>
+    </div>
+  );
+
   return (
     <div className="flex-1 flex flex-col">
       {/* Top bar: demos + mode selector */}
@@ -527,52 +571,16 @@ export function AnalysisWorkspace({
                 {result.intent === 'joint_analysis' && result.joint_result ? (
                   <JointAnalysisPanel joint={result.joint_result} />
                 ) : result.intent === 'change' && result.change_result ? (
-                  <ChangeResultPanel
-                    change={result.change_result}
-                    originalImageUrl={imagePreview}
-                  />
+                  <>
+                    <ChangeResultPanel
+                      change={result.change_result}
+                      originalImageUrl={imagePreview}
+                    />
+                    {/* Semantic interpretation / pipeline answer */}
+                    {result.supported && result.answer && renderAnswerMarkdown(result.answer)}
+                  </>
                 ) : result.supported && result.answer ? (
-                  <div className="prose prose-invert prose-sm max-w-none">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm]}
-                      components={{
-                        table: ({ children }) => (
-                          <div className="overflow-x-auto my-3 rounded-lg border border-border">
-                            <table className="w-full text-sm">{children}</table>
-                          </div>
-                        ),
-                        th: ({ children }) => (
-                          <th className="px-3 py-2 text-left text-[11px] font-semibold text-text-secondary uppercase bg-accent-teal/8 border-b border-border">
-                            {children}
-                          </th>
-                        ),
-                        td: ({ children }) => (
-                          <td className="px-3 py-2 text-sm text-text-primary border-b border-border/50">
-                            {children}
-                          </td>
-                        ),
-                        p: ({ children }) => (
-                          <p className="text-sm text-text-secondary leading-relaxed mb-2">{children}</p>
-                        ),
-                        strong: ({ children }) => (
-                          <strong className="text-text-primary font-semibold">{children}</strong>
-                        ),
-                        em: ({ children }) => (
-                          <em className="text-text-muted text-xs">{children}</em>
-                        ),
-                        h3: ({ children }) => (
-                          <h3 className="text-sm font-semibold text-text-primary mt-4 mb-2">{children}</h3>
-                        ),
-                        ul: ({ children }) => (
-                          <ul className="text-sm text-text-secondary space-y-1 mb-2 ml-4 list-disc">{children}</ul>
-                        ),
-                        li: ({ children }) => <li>{children}</li>,
-                        hr: () => <hr className="border-border my-3" />,
-                      }}
-                    >
-                      {result.answer}
-                    </ReactMarkdown>
-                  </div>
+                  renderAnswerMarkdown(result.answer)
                 ) : !result.supported ? (
                   <div className="py-6 text-center">
                     <AlertTriangle className="w-8 h-8 text-accent-amber mx-auto mb-3" />
