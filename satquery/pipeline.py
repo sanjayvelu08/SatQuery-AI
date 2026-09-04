@@ -19,6 +19,12 @@ from typing import Optional
 from .router import classify, RouteResult
 from .vlm import SatQueryVLM, InferenceResult
 from .sar_tool import run_sar_detection, format_sar_response, SARResult
+from .sarclip_tool import (
+    run_sarclip_scene,
+    otsu_intensity_indicators,
+    format_scene_scores,
+    format_intensity_indicators,
+)
 from .visualize import create_annotated_image
 from .evidence import ExecutionTraceStep
 
@@ -134,7 +140,7 @@ _SPECIALIST_MAP: dict[str, str] = {
     "general": "EarthDial 4B RGB",
     "sar": "YOLOv8 SAR Vessel Detector",
     "change": "BIT-CD Change Detector",
-    "joint_analysis": "SAR Vessel Detector + EarthDial 4B + Evidence Fusion",
+    "joint_analysis": "YOLOv8 SAR + SAR-CLIP + EarthDial 4B + Evidence Fusion",
 }
 
 
@@ -214,6 +220,26 @@ class SatQueryPipeline:
             )
             reroute_note = (
                 f" rerouted_to=change from={original_intent} (image_t2 supplied)"
+            )
+
+        # Pair-aware routing (SIH 26167): when a SAR image is supplied, route
+        # to the joint Optical+SAR workflow even if the query does not
+        # literally contain the words "optical" and "SAR" — mirrors the
+        # image_t2 -> change reroute above. Change requests (explicit change
+        # intent or image_t2) keep priority.
+        if (image_sar_path
+                and route.primary_intent not in ("change", "joint_analysis")):
+            original_intent = route.primary_intent
+            route = RouteResult(
+                query=query, primary_intent="joint_analysis",
+                all_intents=route.all_intents + ["joint_analysis"],
+                prompt=None, supported=True,
+                reason=f"Rerouted from '{original_intent}': image_sar supplied.",
+                detected_modalities=["optical", "sar"],
+            )
+            reroute_note += (
+                f" rerouted_to=joint_analysis from={original_intent} "
+                "(image_sar supplied)"
             )
 
         step_num += 1
@@ -596,6 +622,7 @@ class SatQueryPipeline:
         from .fusion import (
             fuse_evidence, compute_confidence,
             build_optical_prompt_with_sar_context,
+            build_optical_sar_composite,
             run_joint_interpretation,
         )
 
@@ -626,6 +653,32 @@ class SatQueryPipeline:
             output_summary=f"{sar_raw.num_detections} vessel(s) detected" if sar_raw.success else (sar_raw.error or "failed"),
         ))
 
+        # ── SAR-CLIP zero-shot scene labels (isolated subprocess) ─────────
+        scene = run_sarclip_scene(image_sar_path)
+        step_num += 1
+        trace.append(self._make_step(
+            step_num, "sarclip_scene", "alignearth_sar_clip",
+            "ok" if scene.get("success") else "error",
+            scene.get("total_ms", 0.0),
+            input_summary=f"sar={os.path.basename(image_sar_path)}",
+            output_summary=(
+                format_scene_scores(scene["scores"]["coarse"])
+                if scene.get("success") else (scene.get("error") or "failed")
+            ),
+        ))
+        if scene.get("success"):
+            sar_evidence.scene_scores = scene.get("scores")
+
+        # ── Otsu intensity indicators (in-process, numpy-only) ────────────
+        indicators = otsu_intensity_indicators(image_sar_path)
+        step_num += 1
+        trace.append(self._make_step(
+            step_num, "otsu_indicators", "intensity_proxy", "ok", 0.0,
+            input_summary=f"sar={os.path.basename(image_sar_path)}",
+            output_summary=format_intensity_indicators(indicators)[:110],
+        ))
+        sar_evidence.intensity_indicators = indicators
+
         # ── Optical analysis ──────────────────────────────────
         step_num += 1
         t0 = time.time()
@@ -639,6 +692,8 @@ class SatQueryPipeline:
             sar_detection_summary=sar_summary_for_prompt,
             sar_capabilities=sar_evidence.capabilities,
             sar_limitations=sar_evidence.limitations,
+            sar_scene_scores=sar_evidence.scene_scores,
+            sar_intensity_indicators=sar_evidence.intensity_indicators,
         )
         optical_result = self.vlm.query(image_path, optical_prompt)
         optical_ms = (time.time() - t0) * 1000
@@ -673,13 +728,36 @@ class SatQueryPipeline:
             output_summary=f"{len(fused.joint_capabilities)} capabilities, {len(fused.unresolved_gaps)} gaps",
         ))
 
-        # ── Joint interpretation ───────────────────────────────
+        # ── OPTICAL | SAR composite for the joint interpretation call ─────
         step_num += 1
         t0 = time.time()
-        joint_answer, interp_s = run_joint_interpretation(
-            vlm=self.vlm, original_query=query,
-            optical_evidence=optical_evidence, sar_evidence=sar_evidence,
-        )
+        composite_path = build_optical_sar_composite(
+            optical_path=image_path, sar_path=image_sar_path)
+        composite_ms = (time.time() - t0) * 1000
+        trace.append(self._make_step(
+            step_num, "pair_composite", "evidence_fusion", "ok", composite_ms,
+            input_summary=(
+                f"optical={os.path.basename(image_path)} "
+                f"sar={os.path.basename(image_sar_path)}"
+            ),
+            output_summary="OPTICAL|SAR 256x256 side-by-side composite",
+        ))
+
+        # ── Joint interpretation (on the composite image) ──────
+        step_num += 1
+        t0 = time.time()
+        try:
+            joint_answer, interp_s = run_joint_interpretation(
+                vlm=self.vlm, original_query=query,
+                optical_evidence=optical_evidence, sar_evidence=sar_evidence,
+                composite_path=composite_path,
+            )
+        finally:
+            if os.path.isfile(composite_path):
+                try:
+                    os.remove(composite_path)
+                except OSError:
+                    pass
         interp_ms = (time.time() - t0) * 1000
 
         trace.append(self._make_step(
@@ -734,7 +812,13 @@ class SatQueryPipeline:
             optical_ms=round(optical_ms, 0),
             fusion_ms=round(fuse_ms, 0),
             joint_interpretation_ms=round(interp_ms, 0),
-            models_used=["YOLOv8 SAR Vessel Detector", "EarthDial 4B RGB"],
+            models_used=(
+                ["YOLOv8 SAR Vessel Detector",
+                 "AlignEarth-SAR-ViT-B-16 (zero-shot scene)",
+                 "EarthDial 4B RGB"]
+                if scene.get("success") else
+                ["YOLOv8 SAR Vessel Detector", "EarthDial 4B RGB"]
+            ),
         )
 
         result = PipelineResult(

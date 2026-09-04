@@ -27,7 +27,7 @@ class OpticalEvidence:
 
 @dataclass
 class SAREvidence:
-    """Output from YOLOv8 SAR specialist."""
+    """Output from the SAR specialists (YOLOv8 vessels + SAR-CLIP scene)."""
     source: str
     image_path: str
     num_detections: int
@@ -36,16 +36,26 @@ class SAREvidence:
     success: bool
     error: Optional[str] = None
     detection_summary: str = ""
+    # Zero-shot SAR-CLIP scene labels: {"coarse": {label: prob}, "fine": {...}}.
+    # IMAGE-LEVEL estimates — not pixel-level segmentation.
+    scene_scores: Optional[dict] = None
+    # Otsu intensity indicators (image-relative statistics).
+    intensity_indicators: Optional[dict] = None
     capabilities: List[str] = field(default_factory=lambda: [
         "maritime vessel detection",
         "ship presence/absence",
         "vessel bounding boxes with confidence",
+        "zero-shot SAR scene labels (water, built-up, vegetation, agriculture)",
+        "intensity indicators for water-like and built-up-like returns",
     ])
     limitations: List[str] = field(default_factory=lambda: [
-        "cannot detect buildings or infrastructure",
-        "cannot classify land cover or terrain",
-        "cannot detect vegetation or environmental changes",
+        "cannot detect buildings or infrastructure with the vessel detector",
+        "cannot classify land cover or terrain with the vessel detector",
         "trained only on maritime vessel data (YOLOv8 SAR)",
+        "SAR-CLIP scene labels are zero-shot image-level estimates, "
+        "not verified pixel-level semantic segmentation",
+        "intensity indicators are image-relative statistics, not segmentation",
+        "models not validated on RISAT imagery",
     ])
 
 
@@ -93,7 +103,16 @@ class JointAnalysisResult:
     error: Optional[str] = None
 
     def format_markdown(self) -> str:
-        """Human-readable markdown output."""
+        """Human-readable markdown output.
+
+        The answer is assembled deterministically so it ALWAYS separates the
+        four evidence categories required by the SIH 26167 workflow, regardless
+        of the model's prose:
+          1. OPTICAL EVIDENCE      — EarthDial on the optical image
+          2. SAR EVIDENCE          — vessel detections + SAR-CLIP scene labels
+          3. DERIVED INTENSITY INDICATORS — Otsu statistics (NOT segmentation)
+          4. JOINT / UNCERTAIN CONCLUSION  — model interpretation + caveats
+        """
         lines = [
             "**🔗 Joint Optical + SAR Analysis**",
             "",
@@ -103,7 +122,55 @@ class JointAnalysisResult:
             lines.append(f"**Error:** {self.error}")
             return "\n".join(lines)
 
-        lines.append(self.joint_answer)
+        # ── 1. Optical evidence (deterministic) ───────────────────────────
+        lines.append("### 🔍 OPTICAL EVIDENCE")
+        if self.optical_evidence and self.optical_evidence.success:
+            lines.append(self.optical_evidence.answer.strip() or "No optical observations.")
+        else:
+            lines.append("Optical analysis failed or is unavailable.")
+        lines.append("")
+
+        # ── 2. SAR evidence (deterministic) ───────────────────────────────
+        lines.append("### 🛰️ SAR EVIDENCE")
+        if self.sar_evidence and self.sar_evidence.success:
+            det = self.sar_evidence.detection_summary or (
+                f"{self.sar_evidence.num_detections} vessel(s) detected")
+            lines.append(f"- Vessel detector: {det}")
+            scores = self.sar_evidence.scene_scores or {}
+            fine = scores.get("fine") or {}
+            coarse = scores.get("coarse") or {}
+            if fine or coarse:
+                from .sarclip_tool import format_scene_scores
+                if fine:
+                    lines.append(
+                        f"- SAR-CLIP scene labels, fine OpenEarthMap classes "
+                        f"(image-level, native, more reliable): "
+                        f"{format_scene_scores(fine, top=4)}")
+                if coarse:
+                    lines.append(
+                        f"- SAR-CLIP scene labels, coarse generic "
+                        f"(image-level, weak prior): "
+                        f"{format_scene_scores(coarse, top=4)}")
+            lines.append("- SAR-CLIP scene labels are image-level estimates, "
+                         "not pixel-level semantic segmentation.")
+        else:
+            lines.append("SAR analysis failed or is unavailable.")
+        lines.append("")
+
+        # ── 3. Derived intensity indicators (deterministic) ───────────────
+        lines.append("### 📊 DERIVED INTENSITY INDICATORS")
+        ind = self.sar_evidence.intensity_indicators if self.sar_evidence else None
+        if ind:
+            from .sarclip_tool import format_intensity_indicators
+            lines.append(f"- {format_intensity_indicators(ind)}")
+        else:
+            lines.append("- Intensity indicators unavailable.")
+        lines.append("- Image-relative Otsu statistics; NOT semantic segmentation.")
+        lines.append("")
+
+        # ── 4. Joint / uncertain conclusion (model prose) ──────────────────
+        lines.append("### 🤝 JOINT CONCLUSION (AND WHAT REMAINS UNCERTAIN)")
+        lines.append(self.joint_answer.strip() or "No joint interpretation produced.")
         lines.append("")
         lines.append("---")
 

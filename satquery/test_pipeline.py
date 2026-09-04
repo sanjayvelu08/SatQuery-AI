@@ -4,11 +4,11 @@ Loop 2: End-to-end pipeline test.
 Tests:
   1. Captioning on sentinel2_optical.jpg
   2. VQA on sentinel2_optical.jpg
-  3. Grounding on urban_optical.jpg
+  3. Grounding request on urban_optical.jpg (router primary intent: detect)
   4. Classification on sentinel2_optical.jpg
   5. Unsupported intent: change detection
-  6. Unsupported intent: SAR query
-  7. General / unknown intent on sentinel2_optical.jpg
+  6. SAR query (supported via the SAR specialist)
+  7. Generic area description on sentinel2_optical.jpg (routes to caption)
 
 Must be run with: python -X utf8 satquery/test_pipeline.py
 """
@@ -33,11 +33,11 @@ TESTS = [
     # (image_path, query, expected_intent, expected_supported)
     (IMG_S2, "Please describe this satellite image.", "caption", True),
     (IMG_S2, "Are there any buildings visible in this image?", "vqa", True),
-    (IMG_URBAN, "[grounding]Locate the main features in this image.", "grounding", True),
+    (IMG_URBAN, "[grounding]Locate the main features in this image.", "detect", True),
     (IMG_S2, "What is the land cover type of this area?", "classification", True),
     (IMG_S2, "What changed between these two images?", "change", False),
-    (IMG_S2, "Analyze the SAR backscatter in this image.", "sar", False),
-    (IMG_S2, "Tell me about this area.", "general", True),
+    (IMG_S2, "Analyze the SAR backscatter in this image.", "sar", True),
+    (IMG_S2, "Tell me about this area.", "caption", True),
 ]
 
 

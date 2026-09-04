@@ -38,6 +38,17 @@ loop2_results.json
 # IDE
 .vscode/
 .idea/
+
+# Scratch / experimental artifacts (do not commit)
+.freebuff/
+changemodel_test/
+changestar_test/
+annotated/
+change_output/
+test_images/bitemp/
+CHANGESTAR_FEASIBILITY_REPORT.md
+LOOP_10_FULL_INTEGRATION_VALIDATION.md
+PRODUCT_NOVELTY_ANALYSIS.md
 *.swp
 *.swo
 *~

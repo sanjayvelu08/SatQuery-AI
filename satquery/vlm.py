@@ -5,6 +5,15 @@ Uses a subprocess bridge to invoke EarthDial in an isolated venv
 (transformers==4.37.2) rather than loading directly in the main environment
 (transformers==4.42.4). This avoids the Phi3 position_ids compatibility issue.
 
+Model flavour
+-------------
+By default the worker loads the VRSBench QLoRA-adapted EarthDial
+(domain-adapted RS-VQA, validated 0 → 49% exact-match on 500 held-out
+VRSBench questions) and falls back to the clean pretrained base model if the
+adapter artifact is unavailable. To force the base model, construct with
+SatQueryVLM(adapter_path="") or set SATQUERY_EARTHDIAL_ADAPTER="" for the
+worker process.
+
 Public interface is preserved: SatQueryVLM.query() → InferenceResult.
 """
 
@@ -29,11 +38,22 @@ class InferenceResult:
 
 
 class SatQueryVLM:
-    """EarthDial 4B wrapper via subprocess bridge."""
+    """EarthDial 4B wrapper via subprocess bridge.
 
-    def __init__(self, model_dir: str | None = None):
+    Args:
+        model_dir: kept for API compatibility; not used in bridge mode.
+        adapter_path: LoRA adapter dir passed to the EarthDial worker.
+            None (default) → worker auto-resolves: env
+            SATQUERY_EARTHDIAL_ADAPTER, else the standard VRSBench-adapted
+            checkpoint if present, else the pretrained base model.
+            "" (empty) → force the pretrained base model.
+    """
+
+    def __init__(self, model_dir: str | None = None,
+                 adapter_path: str | None = None):
         # model_dir kept for API compatibility; not used in bridge mode
         self.model_dir = model_dir
+        self.adapter_path = adapter_path
 
     # ── Loading ───────────────────────────────────────────────────
 
@@ -74,6 +94,7 @@ class SatQueryVLM:
             max_tokens=max_tokens,
             num_beams=num_beams,
             timeout=300,
+            adapter=self.adapter_path,
         )
 
         elapsed = round(time.time() - t0, 1)
