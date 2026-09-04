@@ -15,6 +15,7 @@ import { IntentBadge } from '../components/IntentBadge';
 import { VisualEvidence } from '../components/VisualEvidence';
 import { LoadingOverlay } from '../components/LoadingOverlay';
 import { DetectionTable } from '../components/DetectionTable';
+import { GroundingPanel } from '../components/GroundingPanel';
 import { ChangeResultPanel } from '../components/ChangeResultPanel';
 import { JointAnalysisPanel } from '../components/JointAnalysisPanel';
 import { TraceTimeline } from '../components/TraceTimeline';
@@ -614,6 +615,14 @@ export function AnalysisWorkspace({
                 {/* SAR detections table */}
                 {result.sar_result?.success && result.sar_result.detections.length > 0 && (
                   <DetectionTable detections={result.sar_result.detections} type="sar" />
+                )}
+
+                {/* Text-guided grounding detections */}
+                {(result.intent === 'grounding' || result.intent === 'detect') && (
+                  <GroundingPanel
+                    target={result.grounding_detections?.[0]?.target || 'detected features'}
+                    detections={result.grounding_detections || []}
+                  />
                 )}
 
                 {/* Model + timing footer */}

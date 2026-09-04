@@ -26,6 +26,21 @@ export interface SARResult {
   error: string | null;
 }
 
+// ── Text-guided Grounding ────────────────────────────────────
+
+export interface GroundingDetection {
+  target: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  x1_norm: number;
+  y1_norm: number;
+  x2_norm: number;
+  y2_norm: number;
+  confidence: number | null;
+}
+
 // ── Change Detection ─────────────────────────────────────────
 
 export interface ChangeRegion {
@@ -123,6 +138,7 @@ export interface AnalyzeResponse {
   elapsed_vlm_s: number;
   elapsed_total_s: number;
   sar_result: SARResult | null;
+  grounding_detections?: GroundingDetection[] | null;
   summary?: AnalysisSummary;
 }
 

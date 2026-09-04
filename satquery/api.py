@@ -200,6 +200,7 @@ async def analyze(
             "elapsed_vlm_s": 0,
             "elapsed_total_s": 0,
             "sar_result": None,
+            "grounding_detections": None,
             "trace": [],
             "summary": {
                 "query": demo_data["query"],
@@ -279,6 +280,7 @@ async def analyze(
             "elapsed_vlm_s": result.elapsed_vlm_s,
             "elapsed_total_s": result.elapsed_total_s,
             "sar_result": sar_result,
+            "grounding_detections": result.grounding_detections or None,
             "trace": [
                 {
                     "step": t.step, "name": t.name, "tool": t.tool,

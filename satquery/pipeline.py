@@ -182,6 +182,9 @@ class PipelineResult:
     # paired (joint/change) paths; None for single qualitative model results.
     evidence_reliability: Optional[float] = None
     reliability_reasoning: str = ""
+    # Structured text-guided grounding boxes (intents: grounding/detect).
+    # Each entry: {target, x1..y2 (px), x1_norm..y2_norm (0-100), confidence}.
+    grounding_detections: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         d = {
@@ -211,6 +214,8 @@ class PipelineResult:
         if self.evidence_reliability is not None:
             d["evidence_reliability"] = self.evidence_reliability
             d["reliability_reasoning"] = self.reliability_reasoning
+        if self.grounding_detections:
+            d["grounding_detections"] = self.grounding_detections
         if self.change_result is not None:
             cr = self.change_result
             d["change_result"] = cr.to_dict() if hasattr(cr, "to_dict") else str(cr)
@@ -552,29 +557,94 @@ class SatQueryPipeline:
         t_total: float, elapsed_route: float,
     ) -> PipelineResult:
         """Run EarthDial VLM for caption/vqa/detect/grounding/classification."""
+        from .grounding import (
+            GroundingDetection,
+            build_grounding_prompt,
+            extract_target,
+            parse_grounding_bboxes,
+        )
+
+        is_grounding = route.primary_intent in ("detect", "grounding")
+
+        # Genuine text-guided grounding: derive the target phrase from the
+        # user's query and condition the prompt on it. If no specific target
+        # can be extracted, fall back to the generic detection prompt.
+        prompt = route.prompt
+        target: str | None = None
+        if is_grounding:
+            target = extract_target(query)
+            if target:
+                prompt = build_grounding_prompt(target)
+
         step_num += 1
         t0 = time.time()
-        vlm_result: InferenceResult = self.vlm.query(image_path, route.prompt)
+        vlm_result: InferenceResult = self.vlm.query(image_path, prompt)
         vlm_ms = (time.time() - t0) * 1000
 
         adapter = getattr(vlm_result, "adapter_used", None)
         precision = getattr(vlm_result, "precision", None)
+        grounding_note = ""
+        if is_grounding:
+            # Coordinate frame is the verified EarthDial eval preprocessing:
+            # non-uniform squash resize to 448x448 (no letterbox padding), so
+            # normalized 0-100 coords map linearly back to original pixels.
+            grounding_note = (
+                f" target={target or 'generic'} "
+                "frame=squash-448 normalized-0-100 "
+                "contract=[[x1,y1,x2,y2,conf]]"
+            )
         trace.append(self._make_step(
             step_num, "vlm_infer", "earthdial_4b",
             "ok" if vlm_result.model_loaded else "error",
             vlm_ms,
             input_summary=(
-                f"image={os.path.basename(image_path)} prompt_len={len(route.prompt or '')} "
+                f"image={os.path.basename(image_path)} prompt_len={len(prompt or '')} "
                 f"tokens=50 beams=2"
                 + (f" adapter={adapter}" if adapter else "")
                 + (f" precision={precision}" if precision else "")
+                + grounding_note
             ),
             output_summary=f"{len(vlm_result.answer)} chars response",
         ))
 
+        # Structured grounding evidence (intent + target + parsed boxes)
+        grounding_detections: list[dict] = []
+        if is_grounding and vlm_result.answer:
+            step_num += 1
+            t_g = time.time()
+            try:
+                boxes = parse_grounding_bboxes(vlm_result.answer)
+                from PIL import Image
+                with Image.open(image_path) as img:
+                    img_w, img_h = img.size
+                grounding_detections = [
+                    GroundingDetection(
+                        target=target or "detected",
+                        x1=b["x1"], y1=b["y1"], x2=b["x2"], y2=b["y2"],
+                        confidence=b["confidence"],
+                    ).to_dict(img_w, img_h)
+                    for b in boxes
+                ]
+            except Exception:
+                grounding_detections = []
+            g_ms = (time.time() - t_g) * 1000
+            trace.append(self._make_step(
+                step_num, "grounding", "earthdial_grounding",
+                "ok" if grounding_detections else "skipped",
+                g_ms,
+                input_summary=(
+                    f"target={target or 'generic'} frame=squash-448 "
+                    "normalized-0-100 contract=[[x1,y1,x2,y2,conf]]"
+                ),
+                output_summary=(
+                    f"{len(grounding_detections)} box(es) parsed for "
+                    f"'{target or 'generic'}'"
+                ),
+            ))
+
         # Visual evidence
         annotated = None
-        if route.primary_intent in ("detect", "grounding") and vlm_result.answer:
+        if is_grounding and vlm_result.answer:
             step_num += 1
             t_vis = time.time()
             try:
@@ -588,7 +658,7 @@ class SatQueryPipeline:
                 step_num, "visual_evidence", "visualize",
                 "ok" if annotated else "skipped",
                 vis_ms,
-                input_summary=f"intent={route.primary_intent}",
+                input_summary=f"intent={route.primary_intent} target={target or 'generic'}",
                 output_summary="annotated image created" if annotated else "no detectable features",
             ))
 
@@ -608,6 +678,7 @@ class SatQueryPipeline:
             elapsed_route_ms=elapsed_route,
             elapsed_vlm_s=vlm_result.elapsed_s,
             elapsed_total_s=round(time.time() - t_total, 1),
+            grounding_detections=grounding_detections,
             # single-source qualitative model: reliability intentionally None
         )
         self.history.add(result)
