@@ -19,6 +19,21 @@ import { ChangeResultPanel } from '../components/ChangeResultPanel';
 import { JointAnalysisPanel } from '../components/JointAnalysisPanel';
 import { TraceTimeline } from '../components/TraceTimeline';
 
+/**
+ * Placeholder shown while a GeoTIFF is selected but not yet analysed:
+ * browsers cannot decode TIFF inside <img>, so we never try to preview the
+ * raw file — the backend's rendered RGB representation is shown after
+ * analysis instead.
+ */
+const TIFF_PLACEHOLDER =
+  'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="260">' +
+    '<rect width="400" height="260" fill="#0f172a"/>' +
+    '<rect x="1" y="1" width="398" height="258" fill="none" stroke="#164e63" stroke-width="2" stroke-dasharray="6 6"/>' +
+    '<text x="200" y="115" fill="#5eead4" font-family="monospace" font-size="15" text-anchor="middle">GeoTIFF selected</text>' +
+    '<text x="200" y="142" fill="#94a3b8" font-family="monospace" font-size="12" text-anchor="middle">RGB preview appears after analysis</text>' +
+    '</svg>');
+
 const MODE_CONFIG: Record<AnalysisMode, {
   label: string;
   icon: React.ReactNode;
@@ -123,7 +138,11 @@ export function AnalysisWorkspace({
   }, []);
 
   const handleFile = useCallback((file: File, which: 'main' | 't2' | 'sar') => {
-    const preview = URL.createObjectURL(file);
+    // Browsers cannot decode TIFF in <img>, so a raw TIFF is never previewed
+    // directly. A placeholder is shown instead; the backend returns the
+    // rendered RGB representation (annotated_image_url) after analysis.
+    const isTiff = /\.(tif|tiff)$/i.test(file.name);
+    const preview = isTiff ? TIFF_PLACEHOLDER : URL.createObjectURL(file);
     if (which === 'main') {
       setImageFile(file);
       setImagePreview(preview);
@@ -141,7 +160,8 @@ export function AnalysisWorkspace({
   const handleDrop = (e: React.DragEvent, which: 'main' | 't2' | 'sar') => {
     e.preventDefault();
     const file = e.dataTransfer.files[0];
-    if (file && file.type.startsWith('image/')) handleFile(file, which);
+    const isTiff = file && /\.(tif|tiff)$/i.test(file.name);
+    if (file && (file.type.startsWith('image/') || isTiff)) handleFile(file, which);
   };
 
   const handleAnalyze = async () => {
@@ -371,7 +391,7 @@ export function AnalysisWorkspace({
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.tif,.tiff"
                   onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f, 'main'); }}
                   className="hidden"
                 />
@@ -407,7 +427,7 @@ export function AnalysisWorkspace({
                   <input
                     ref={fileT2Ref}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,.tif,.tiff"
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f, 't2'); }}
                     className="hidden"
                   />
@@ -444,7 +464,7 @@ export function AnalysisWorkspace({
                   <input
                     ref={fileSarRef}
                     type="file"
-                    accept="image/*"
+                    accept="image/*,.tif,.tiff"
                     onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFile(f, 'sar'); }}
                     className="hidden"
                   />

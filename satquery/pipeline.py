@@ -31,6 +31,15 @@ from .evidence import ExecutionTraceStep
 # Supported image extensions for validation
 _SUPPORTED_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
 
+# Compact keys kept when serializing geo metadata to JSON responses
+_META_KEYS = ("format", "width", "height", "bands", "dtype", "epsg",
+              "crs_type", "pixel_scale", "bounds", "nodata", "date_time",
+              "is_tiff", "rendered")
+
+
+def _compact_meta(meta: dict) -> dict:
+    return {k: meta[k] for k in _META_KEYS if k in meta and meta[k] is not None}
+
 
 @dataclass
 class PipelineResult:
@@ -53,6 +62,10 @@ class PipelineResult:
     elapsed_route_ms: float = 0.0
     elapsed_vlm_s: float = 0.0
     elapsed_total_s: float = 0.0
+    # probe_image() metadata per input slot ("main"/"t2"/"sar") for the run.
+    geo_meta: dict = field(default_factory=dict)
+    # check_pair_compat() verdict for paired (change / optical+SAR) runs.
+    pair_compat: Optional[dict] = None
 
     def to_dict(self) -> dict:
         d = {
@@ -73,6 +86,12 @@ class PipelineResult:
             d["image_t2_path"] = self.image_t2_path
         if self.image_sar_path:
             d["image_sar_path"] = self.image_sar_path
+        if self.geo_meta:
+            d["geo_meta"] = {
+                k: _compact_meta(m) for k, m in self.geo_meta.items() if m
+            }
+        if self.pair_compat:
+            d["pair_compat"] = self.pair_compat
         if self.change_result is not None:
             cr = self.change_result
             d["change_result"] = cr.to_dict() if hasattr(cr, "to_dict") else str(cr)
@@ -167,8 +186,15 @@ class SatQueryPipeline:
         if ext and ext not in _SUPPORTED_EXTS:
             errors.append(f"{label} has unsupported format '{ext}'.")
         try:
-            from PIL import Image
-            Image.open(path).verify()
+            if ext in (".tif", ".tiff"):
+                # TIFFs are probed with tifffile: Pillow silently drops bands
+                # from multispectral/float GeoTIFFs, so it must not be the
+                # readability gate here.
+                from .geoio import probe_image
+                probe_image(path)
+            else:
+                from PIL import Image
+                Image.open(path).verify()
         except Exception:
             errors.append(f"{label} image is corrupt or unreadable.")
         return errors
@@ -285,16 +311,70 @@ class SatQueryPipeline:
             error="; ".join(val_errors) if val_errors else None,
         ))
 
-        if val_errors:
+        def _unsupported(msg: str) -> PipelineResult:
             result = PipelineResult(
                 query=query, image_path=image_path, intent=route.primary_intent,
                 all_intents=route.all_intents, supported=False,
-                unsupported_reason="\n".join(val_errors),
+                unsupported_reason=msg,
                 trace=trace, elapsed_route_ms=elapsed_route,
                 elapsed_total_s=round(time.time() - t_total, 1),
             )
             self.history.add(result)
             return result
+
+        if val_errors:
+            return _unsupported("\n".join(val_errors))
+
+        # ── Step 2b: GeoTIFF/TIFF preparation (probe + RGB render) ───────
+        # Raw multispectral / float GeoTIFFs must never reach the specialists'
+        # Pillow "convert('RGB')" path (silently drops bands). Each TIFF is
+        # probed for metadata and rendered to an RGB PNG that the specialists
+        # consume instead; JPEG/PNG inputs pass through untouched.
+        from .geoio import probe_image, render_rgb
+        slot_meta: dict[str, dict] = {}
+        t_prep = time.time()
+        geo_errors: list[str] = []
+        for slot, p in (("main", image_path), ("t2", image_t2_path),
+                        ("sar", image_sar_path)):
+            if not p:
+                continue
+            try:
+                meta = probe_image(p)
+            except Exception as exc:
+                geo_errors.append(f"{slot}: {exc}")
+                continue
+            slot_meta[slot] = meta
+            if not meta.get("is_tiff"):
+                continue
+            t_r = time.time()
+            try:
+                rendered = render_rgb(p)
+            except Exception as exc:
+                geo_errors.append(f"{slot} TIFF render failed: {exc}")
+                continue
+            render_ms = (time.time() - t_r) * 1000
+            meta["rendered"] = os.path.basename(rendered)
+            if slot == "main":
+                image_path = rendered
+            elif slot == "t2":
+                image_t2_path = rendered
+            else:
+                image_sar_path = rendered
+            step_num += 1
+            trace.append(self._make_step(
+                step_num, "geo_probe", "geoio", "ok", render_ms,
+                input_summary=f"{slot}={os.path.basename(p)}",
+                output_summary=(
+                    f"{meta.get('bands', '?')} band(s) {meta.get('dtype', '?')} "
+                    f"{meta.get('width', '?')}x{meta.get('height', '?')} "
+                    f"{('EPSG:' + str(meta['epsg'])) if meta.get('epsg') else 'no CRS'} "
+                    f"-> RGB render {os.path.basename(rendered)}"
+                ),
+            ))
+        prep_ms = (time.time() - t_prep) * 1000
+
+        if geo_errors:
+            return _unsupported("; ".join(geo_errors))
 
         # ── Step 3: Specialist selection ───────────────────────
         specialist = _SPECIALIST_MAP.get(route.primary_intent, "EarthDial 4B RGB")
@@ -311,12 +391,14 @@ class SatQueryPipeline:
             return self._run_joint(
                 image_path, image_sar_path, query, route, trace,
                 step_num, t_total, elapsed_route,
+                slot_meta=slot_meta,
             )
 
         if route.primary_intent == "change":
             return self._run_change(
                 image_path, image_t2_path, query, route, trace,
                 step_num, t_total, elapsed_route,
+                slot_meta=slot_meta,
             )
 
         if route.primary_intent == "sar":
@@ -408,6 +490,7 @@ class SatQueryPipeline:
         query: str, route: RouteResult,
         trace: list[ExecutionTraceStep], step_num: int,
         t_total: float, elapsed_route: float,
+        slot_meta: Optional[dict] = None,
     ) -> PipelineResult:
         """Run BIT-CD change detection."""
         from .bit_tool import get_bit_tool
@@ -520,6 +603,29 @@ class SatQueryPipeline:
                 "contains no object counts or physical-area estimates, and carries "
                 "no geospatial coordinates._"
             )
+
+        # ── Geospatial pair compatibility (metadata-driven, never inferred) ──
+        # T1/T2 are compared where metadata exists (dims, CRS, resolution,
+        # bounds). Equal dimensions alone never imply co-registration; pairs
+        # without geospatial metadata get an explicit warning instead of
+        # silently resampling. The verdict is surfaced in the answer and in
+        # result.pair_compat, never fed to the VLM prompt.
+        pair_verdict = None
+        if change_result.success and slot_meta:
+            from .geoio import check_pair_compat
+            pair_verdict = check_pair_compat(
+                slot_meta.get("main") or {}, slot_meta.get("t2") or {})
+            answer += (
+                "\n\n---\n\n**🗺️ Pair compatibility:** "
+                + pair_verdict.get("summary", "")
+            )
+            step_num += 1
+            trace.append(self._make_step(
+                step_num, "pair_compat_check", "geoio", "ok", 0,
+                input_summary="t1 vs t2 metadata",
+                output_summary=pair_verdict.get("summary", "")[:110],
+            ))
+
         step_num += 1
         trace.append(self._make_step(
             step_num, "final_answer", "pipeline", "ok", 0,
@@ -541,6 +647,7 @@ class SatQueryPipeline:
             annotated_image=annotated, change_result=change_result,
             trace=trace, elapsed_route_ms=elapsed_route,
             elapsed_total_s=round(time.time() - t_total, 1),
+            geo_meta=slot_meta or {}, pair_compat=pair_verdict,
         )
         self.history.add(result)
         return result
@@ -614,6 +721,7 @@ class SatQueryPipeline:
         query: str, route: RouteResult,
         trace: list[ExecutionTraceStep], step_num: int,
         t_total: float, elapsed_route: float,
+        slot_meta: Optional[dict] = None,
     ) -> PipelineResult:
         """Run optical + SAR joint analysis with evidence fusion."""
         from .evidence import (
@@ -643,6 +751,7 @@ class SatQueryPipeline:
             success=sar_raw.success,
             error=sar_raw.error,
             detection_summary=format_sar_response(sar_raw),
+            image_meta=(slot_meta or {}).get("sar"),
         )
 
         trace.append(self._make_step(
@@ -706,6 +815,7 @@ class SatQueryPipeline:
             image_path=image_path,
             elapsed_s=optical_result.elapsed_s,
             success=optical_result.model_loaded,
+            image_meta=(slot_meta or {}).get("main"),
         )
 
         trace.append(self._make_step(
@@ -778,6 +888,24 @@ class SatQueryPipeline:
             output_summary=f"reliability={confidence:.2f}",
         ))
 
+        # ── Optical+SAR spatial compatibility (never inferred) ─
+        # Where geospatial metadata exists, dims/CRS/resolution/bounds are
+        # compared. Equal dimensions never imply co-registration; pairs
+        # without metadata get an explicit warning. Surface in the answer
+        # appendix (evidence), not the VLM prompt.
+        from .geoio import check_pair_compat
+        pair_verdict = check_pair_compat(
+            (slot_meta or {}).get("main") or {},
+            (slot_meta or {}).get("sar") or {},
+        ) if slot_meta else None
+        if pair_verdict:
+            step_num += 1
+            trace.append(self._make_step(
+                step_num, "pair_compat_check", "geoio", "ok", 0,
+                input_summary="optical vs sar metadata",
+                output_summary=pair_verdict.get("summary", "")[:110],
+            ))
+
         # ── Final answer ───────────────────────────────────────
         step_num += 1
         trace.append(self._make_step(
@@ -812,6 +940,7 @@ class SatQueryPipeline:
             optical_ms=round(optical_ms, 0),
             fusion_ms=round(fuse_ms, 0),
             joint_interpretation_ms=round(interp_ms, 0),
+            pair_compat=pair_verdict,
             models_used=(
                 ["YOLOv8 SAR Vessel Detector",
                  "AlignEarth-SAR-ViT-B-16 (zero-shot scene)",
@@ -831,6 +960,7 @@ class SatQueryPipeline:
             trace=trace, elapsed_route_ms=elapsed_route,
             elapsed_vlm_s=optical_result.elapsed_s + interp_s,
             elapsed_total_s=round(time.time() - t_total, 1),
+            geo_meta=slot_meta or {}, pair_compat=pair_verdict,
         )
         self.history.add(result)
         return result

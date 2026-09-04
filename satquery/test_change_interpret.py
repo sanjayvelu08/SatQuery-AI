@@ -163,8 +163,12 @@ class ChangeInterpretationTests(unittest.TestCase):
         self.assertEqual(names, [
             "route", "validate", "specialist_selection", "bit_cd_detect",
             "region_extraction", "visual_evidence", "change_interpret",
-            "final_answer",
+            "pair_compat_check", "final_answer",
         ])
+        compat = self.step(r, "pair_compat_check")
+        self.assertEqual(compat.status, "ok")
+        self.assertIn("co-registration=unverified", compat.output_summary)
+        self.assertIn("Pair compatibility", r.answer)
         vis = self.step(r, "visual_evidence")
         self.assertEqual(vis.status, "ok")
         self.assertEqual(vis.tool, "bit_cd")

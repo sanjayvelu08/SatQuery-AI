@@ -59,7 +59,7 @@ export function LandingScreen({ onUpload }: LandingScreenProps) {
           </div>
           <input
             type="file"
-            accept="image/*"
+            accept="image/*,.tif,.tiff"
             onChange={handleFileChange}
             className="hidden"
           />

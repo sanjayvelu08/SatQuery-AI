@@ -23,6 +23,9 @@ class OpticalEvidence:
     elapsed_s: float
     success: bool
     error: Optional[str] = None
+    # probe_image() metadata (dims, CRS/EPSG, resolution, bounds...) when
+    # the input carried geospatial information. Never used to flood the VLM.
+    image_meta: Optional[dict] = None
 
 
 @dataclass
@@ -41,6 +44,8 @@ class SAREvidence:
     scene_scores: Optional[dict] = None
     # Otsu intensity indicators (image-relative statistics).
     intensity_indicators: Optional[dict] = None
+    # probe_image() metadata for the SAR input (dims, CRS/EPSG, ...).
+    image_meta: Optional[dict] = None
     capabilities: List[str] = field(default_factory=lambda: [
         "maritime vessel detection",
         "ship presence/absence",
@@ -101,6 +106,8 @@ class JointAnalysisResult:
     joint_interpretation_ms: float = 0.0
     models_used: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    # check_pair_compat() verdict for the optical+SAR pair, when evaluated.
+    pair_compat: Optional[dict] = None
 
     def format_markdown(self) -> str:
         """Human-readable markdown output.
@@ -207,6 +214,19 @@ class JointAnalysisResult:
         # Models
         lines.append(f"_Models: {', '.join(self.models_used)}_")
 
+        # ── 5. Geospatial / pair compatibility (appendix, never in the prompt)
+        if self.pair_compat:
+            from .geoio import format_meta_line, format_pair_compat
+            lines.append("")
+            lines.append("### 🗺️ SPATIAL PAIR COMPATIBILITY")
+            if self.optical_evidence and self.optical_evidence.image_meta:
+                lines.append(format_meta_line(
+                    "Optical input", self.optical_evidence.image_meta))
+            if self.sar_evidence and self.sar_evidence.image_meta:
+                lines.append(format_meta_line(
+                    "SAR input", self.sar_evidence.image_meta))
+            lines.append(format_pair_compat(self.pair_compat))
+
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -234,11 +254,15 @@ class JointAnalysisResult:
                 "detection_summary": self.sar_evidence.detection_summary,
                 "inference_time_ms": self.sar_evidence.inference_time_ms,
                 "error": self.sar_evidence.error,
+                "image_meta": self.sar_evidence.image_meta,
             }
+        if self.pair_compat:
+            d["pair_compat"] = self.pair_compat
         if self.optical_evidence:
             d["optical"] = {
                 "success": self.optical_evidence.success,
                 "elapsed_s": self.optical_evidence.elapsed_s,
                 "error": self.optical_evidence.error,
+                "image_meta": self.optical_evidence.image_meta,
             }
         return d

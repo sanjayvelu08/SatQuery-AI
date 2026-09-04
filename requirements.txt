@@ -17,6 +17,10 @@ gradio>=4.0.0
 
 # Image processing
 Pillow>=10.0.0
+# GeoTIFF metadata probe + band-preserving RGB renders (SIH geospatial inputs).
+# Pinned to 2024.8.30: supports BOTH numpy 1.26 (main env) and numpy 2.x
+# (isolated venv) for raster reads; newer tifffile requires numpy>=2.
+tifffile==2024.8.30
 
 # Utilities
 numpy>=1.24.0
