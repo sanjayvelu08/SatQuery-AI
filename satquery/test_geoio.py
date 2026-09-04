@@ -404,6 +404,10 @@ class TestPipelineGeoTiffIntegration(GeoIoFixtures):
             self.assertTrue(c["path_ok_at_call"])
         self.assertIn("SPATIAL PAIR COMPATIBILITY", r.answer)
         self.assertIn("verified", r.answer)
+        # composite persisted as visual evidence — tidy up the test artifact
+        jr = r.joint_result
+        if jr and jr.composite_path and os.path.isfile(jr.composite_path):
+            os.remove(jr.composite_path)
 
     def test_change_geotiff_metadata_free_unverified(self):
         from satquery.bit_tool import ChangeDetectionResult, ChangeRegion

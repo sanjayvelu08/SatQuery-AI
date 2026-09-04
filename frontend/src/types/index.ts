@@ -91,9 +91,21 @@ export interface JointResult {
   trace: ExecutionTraceStep[];
   sar?: SAREvidence;
   optical?: OpticalEvidence;
+  composite_url?: string | null;
 }
 
 // ── Main Response ────────────────────────────────────────────
+
+export interface AnalysisSummary {
+  query: string;
+  intent: IntentType;
+  models_used: string;
+  evidence_reliability: number | null;
+  reliability_reasoning: string | null;
+  reliability_note: string | null;
+  warnings: string[];
+  trace_step_count: number;
+}
 
 export interface AnalyzeResponse {
   query: string;
@@ -111,6 +123,7 @@ export interface AnalyzeResponse {
   elapsed_vlm_s: number;
   elapsed_total_s: number;
   sar_result: SARResult | null;
+  summary?: AnalysisSummary;
 }
 
 // ── Demo / History ───────────────────────────────────────────

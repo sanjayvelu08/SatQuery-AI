@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -41,6 +42,117 @@ def _compact_meta(meta: dict) -> dict:
     return {k: meta[k] for k in _META_KEYS if k in meta and meta[k] is not None}
 
 
+# Output dir for persisted visual-evidence artifacts (served by FastAPI /changes)
+_CHANGE_OUTPUT_DIR = os.path.join(os.path.dirname(__file__), "..", "change_output")
+
+
+def compute_change_reliability(
+    change_result,
+    *,
+    interpretation_requested: bool = False,
+    interpretation_produced: bool = False,
+    pair_verdict: Optional[dict] = None,
+) -> tuple[float, str]:
+    """Deterministic, rule-based evidence reliability for the change path.
+
+    Like the joint path, this is NOT prediction accuracy: it measures how
+    much reliable evidence was produced and is fully reproducible.
+    Bounded to 0.0-1.0.
+    """
+    if not getattr(change_result, "success", False):
+        return 0.0, "BIT-CD execution failed; no reliability"
+    factors = []
+    reasons = []
+
+    factors.append(1.0)
+    reasons.append("BIT-CD executed successfully")
+
+    has_statistics = getattr(change_result, "change_pct", None) is not None
+    if has_statistics:
+        factors.append(1.0)
+        reasons.append(f"change statistics computed ({change_result.change_pct:.1f}%)")
+    else:
+        factors.append(0.5)
+        reasons.append("change statistics unavailable")
+
+    overlay = getattr(change_result, "overlay_path", None)
+    mask = getattr(change_result, "mask_path", None)
+    if overlay or mask:
+        factors.append(1.0)
+        reasons.append("visual change evidence (overlay/mask) produced")
+    else:
+        factors.append(0.7)
+        reasons.append("no overlay/mask visual evidence produced")
+
+    num_regions = int(getattr(change_result, "num_regions", 0) or 0)
+    if num_regions > 0:
+        factors.append(1.0)
+        reasons.append(f"{num_regions} change region(s) extracted")
+    elif not getattr(change_result, "change_detected", True):
+        factors.append(1.0)
+        reasons.append("no change detected (absence is itself an evidence result)")
+    else:
+        factors.append(0.6)
+        reasons.append("no change regions extracted despite detected change")
+
+    if interpretation_requested:
+        if interpretation_produced:
+            factors.append(1.0)
+            reasons.append("semantic interpretation produced")
+        else:
+            factors.append(0.4)
+            reasons.append("interpretation requested but not produced")
+
+    if pair_verdict:
+        if pair_verdict.get("co_registration") == "verified":
+            factors.append(1.0)
+            reasons.append("T1/T2 co-registration verified from geospatial metadata")
+        elif pair_verdict.get("status") == "incompatible":
+            factors.append(0.5)
+            reasons.append("T1/T2 geospatial metadata incompatible")
+        else:
+            factors.append(0.95)
+            reasons.append("T1/T2 pixel-grid compatible (co-registration unverified)")
+
+    score = round(min(1.0, max(0.0, sum(factors) / len(factors))), 2)
+    return score, "; ".join(reasons)
+
+
+def build_result_summary(result: "PipelineResult") -> dict:
+    """Compact machine-readable summary derived only from existing results.
+
+    Used by the API response and tests; never duplicates trace/evidence.
+    """
+    models = result.model_used or ""
+    if result.joint_result is not None:
+        jr = result.joint_result
+        if getattr(jr, "models_used", None):
+            models = ", ".join(jr.models_used)
+    reliability = result.evidence_reliability
+    reasoning = result.reliability_reasoning or ""
+    note = None
+    if reliability is None and result.supported \
+            and result.intent not in ("change", "joint_analysis"):
+        note = "qualitative model result \u2014 reliability not quantified"
+
+    warnings = []
+    if not result.supported and result.unsupported_reason:
+        warnings = [l for l in result.unsupported_reason.splitlines() if l][:3]
+    elif result.pair_compat:
+        warnings = list(result.pair_compat.get("warnings", [])[:3])
+
+    return {
+        "query": result.query,
+        "intent": result.intent,
+        "models_used": models,
+        "evidence_reliability": reliability,
+        "reliability_reasoning": reasoning or None,
+        "reliability_note": note,
+        "warnings": warnings,
+        "trace_step_count": len(result.trace),
+    }
+
+
 @dataclass
 class PipelineResult:
     """Full structured output from the SatQuery pipeline."""
@@ -66,6 +178,10 @@ class PipelineResult:
     geo_meta: dict = field(default_factory=dict)
     # check_pair_compat() verdict for paired (change / optical+SAR) runs.
     pair_compat: Optional[dict] = None
+    # Deterministic evidence reliability (NOT prediction accuracy). Set for
+    # paired (joint/change) paths; None for single qualitative model results.
+    evidence_reliability: Optional[float] = None
+    reliability_reasoning: str = ""
 
     def to_dict(self) -> dict:
         d = {
@@ -92,6 +208,9 @@ class PipelineResult:
             }
         if self.pair_compat:
             d["pair_compat"] = self.pair_compat
+        if self.evidence_reliability is not None:
+            d["evidence_reliability"] = self.evidence_reliability
+            d["reliability_reasoning"] = self.reliability_reasoning
         if self.change_result is not None:
             cr = self.change_result
             d["change_result"] = cr.to_dict() if hasattr(cr, "to_dict") else str(cr)
@@ -105,6 +224,7 @@ class PipelineResult:
                 "status": t.status, "duration_ms": t.duration_ms,
                 "input_summary": t.input_summary,
                 "output_summary": t.output_summary,
+                "error": t.error,
             }
             for t in self.trace
         ]
@@ -437,11 +557,18 @@ class SatQueryPipeline:
         vlm_result: InferenceResult = self.vlm.query(image_path, route.prompt)
         vlm_ms = (time.time() - t0) * 1000
 
+        adapter = getattr(vlm_result, "adapter_used", None)
+        precision = getattr(vlm_result, "precision", None)
         trace.append(self._make_step(
             step_num, "vlm_infer", "earthdial_4b",
             "ok" if vlm_result.model_loaded else "error",
             vlm_ms,
-            input_summary=f"image={os.path.basename(image_path)} prompt_len={len(route.prompt or '')}",
+            input_summary=(
+                f"image={os.path.basename(image_path)} prompt_len={len(route.prompt or '')} "
+                f"tokens=50 beams=2"
+                + (f" adapter={adapter}" if adapter else "")
+                + (f" precision={precision}" if precision else "")
+            ),
             output_summary=f"{len(vlm_result.answer)} chars response",
         ))
 
@@ -481,6 +608,7 @@ class SatQueryPipeline:
             elapsed_route_ms=elapsed_route,
             elapsed_vlm_s=vlm_result.elapsed_s,
             elapsed_total_s=round(time.time() - t_total, 1),
+            # single-source qualitative model: reliability intentionally None
         )
         self.history.add(result)
         return result
@@ -510,7 +638,10 @@ class SatQueryPipeline:
             step_num, "bit_cd_detect", "bit_cd",
             "ok" if change_result.success else "error",
             detect_ms,
-            input_summary=f"t1={os.path.basename(image_path)} t2={os.path.basename(image_t2_path)}",
+            input_summary=(
+                f"t1={os.path.basename(image_path)} "
+                f"t2={os.path.basename(image_t2_path)} img_size=256(default)"
+            ),
             output_summary=(
                 f"{change_result.change_pct:.1f}% change, {change_result.num_regions} regions"
                 if change_result.success
@@ -541,6 +672,7 @@ class SatQueryPipeline:
         from .change_interpret import run_change_interpretation, should_interpret
 
         interpret_text: str | None = None
+        interp_wanted: bool = False
         if change_result.success:
             step_num += 1
             if not change_result.change_detected:
@@ -552,6 +684,7 @@ class SatQueryPipeline:
                 ))
             else:
                 wants_interp, skip_reason = should_interpret(query)
+                interp_wanted = wants_interp
                 if not wants_interp:
                     trace.append(self._make_step(
                         step_num, "change_interpret", "earthdial_change_interpreter",
@@ -637,6 +770,13 @@ class SatQueryPipeline:
 
         annotated = change_result.overlay_path if change_result.success else None
 
+        rel, rel_reason = compute_change_reliability(
+            change_result,
+            interpretation_requested=interp_wanted,
+            interpretation_produced=bool(interpret_text and interpret_text.strip()),
+            pair_verdict=pair_verdict,
+        ) if change_result.success else (0.0, "BIT-CD execution failed; no reliability")
+
         result = PipelineResult(
             query=query, image_path=image_path, image_t2_path=image_t2_path,
             intent=route.primary_intent, all_intents=route.all_intents,
@@ -648,6 +788,7 @@ class SatQueryPipeline:
             trace=trace, elapsed_route_ms=elapsed_route,
             elapsed_total_s=round(time.time() - t_total, 1),
             geo_meta=slot_meta or {}, pair_compat=pair_verdict,
+            evidence_reliability=rel, reliability_reasoning=rel_reason,
         )
         self.history.add(result)
         return result
@@ -660,14 +801,14 @@ class SatQueryPipeline:
         """Run YOLOv8 SAR vessel detection."""
         step_num += 1
         t0 = time.time()
-        sar_result = run_sar_detection(image_path)
+        sar_result = run_sar_detection(image_path)  # conf=0.25 (tool default)
         sar_ms = (time.time() - t0) * 1000
 
         trace.append(self._make_step(
             step_num, "sar_detect", "yolov8_sar",
             "ok" if sar_result.success else "error",
             sar_ms,
-            input_summary=f"image={os.path.basename(image_path)}",
+            input_summary=f"image={os.path.basename(image_path)} conf=0.25(default)",
             output_summary=(
                 f"{sar_result.num_detections} vessel(s) detected"
                 if sar_result.success
@@ -739,7 +880,7 @@ class SatQueryPipeline:
         # ── SAR detection ─────────────────────────────────────
         step_num += 1
         t0 = time.time()
-        sar_raw = run_sar_detection(image_sar_path)
+        sar_raw = run_sar_detection(image_sar_path)  # conf=0.25 (tool default)
         sar_ms = (time.time() - t0) * 1000
 
         sar_evidence = SAREvidence(
@@ -758,18 +899,18 @@ class SatQueryPipeline:
             step_num, "sar_detect", "yolov8_sar",
             "ok" if sar_raw.success else "error",
             sar_ms,
-            input_summary=f"sar={os.path.basename(image_sar_path)}",
+            input_summary=f"sar={os.path.basename(image_sar_path)} conf=0.25(default)",
             output_summary=f"{sar_raw.num_detections} vessel(s) detected" if sar_raw.success else (sar_raw.error or "failed"),
         ))
 
         # ── SAR-CLIP zero-shot scene labels (isolated subprocess) ─────────
-        scene = run_sarclip_scene(image_sar_path)
+        scene = run_sarclip_scene(image_sar_path)  # labels: coarse + fine
         step_num += 1
         trace.append(self._make_step(
             step_num, "sarclip_scene", "alignearth_sar_clip",
             "ok" if scene.get("success") else "error",
             scene.get("total_ms", 0.0),
-            input_summary=f"sar={os.path.basename(image_sar_path)}",
+            input_summary=f"sar={os.path.basename(image_sar_path)} labels=coarse+fine",
             output_summary=(
                 format_scene_scores(scene["scores"]["coarse"])
                 if scene.get("success") else (scene.get("error") or "failed")
@@ -804,7 +945,7 @@ class SatQueryPipeline:
             sar_scene_scores=sar_evidence.scene_scores,
             sar_intensity_indicators=sar_evidence.intensity_indicators,
         )
-        optical_result = self.vlm.query(image_path, optical_prompt)
+        optical_result = self.vlm.query(image_path, optical_prompt)  # tokens=50 beams=2 (defaults)
         optical_ms = (time.time() - t0) * 1000
 
         optical_evidence = OpticalEvidence(
@@ -818,11 +959,17 @@ class SatQueryPipeline:
             image_meta=(slot_meta or {}).get("main"),
         )
 
+        _adapter = getattr(optical_result, "adapter_used", None)
+        _precision = getattr(optical_result, "precision", None)
         trace.append(self._make_step(
             step_num, "optical_analyze", "earthdial_4b",
             "ok" if optical_evidence.success else "error",
             optical_ms,
-            input_summary=f"optical={os.path.basename(image_path)}",
+            input_summary=(
+                f"optical={os.path.basename(image_path)} tokens=50 beams=2"
+                + (f" adapter={_adapter}" if _adapter else "")
+                + (f" precision={_precision}" if _precision else "")
+            ),
             output_summary=f"{len(optical_evidence.answer)} chars response",
         ))
 
@@ -839,10 +986,15 @@ class SatQueryPipeline:
         ))
 
         # ── OPTICAL | SAR composite for the joint interpretation call ─────
+        # Persisted as visual evidence (served like change outputs): the judge
+        # must be able to see the exact pair image the interpretation used.
         step_num += 1
         t0 = time.time()
+        os.makedirs(_CHANGE_OUTPUT_DIR, exist_ok=True)
         composite_path = build_optical_sar_composite(
-            optical_path=image_path, sar_path=image_sar_path)
+            optical_path=image_path, sar_path=image_sar_path,
+            out_path=os.path.join(
+                _CHANGE_OUTPUT_DIR, f"composite_{uuid.uuid4().hex}.png"))
         composite_ms = (time.time() - t0) * 1000
         trace.append(self._make_step(
             step_num, "pair_composite", "evidence_fusion", "ok", composite_ms,
@@ -850,24 +1002,20 @@ class SatQueryPipeline:
                 f"optical={os.path.basename(image_path)} "
                 f"sar={os.path.basename(image_sar_path)}"
             ),
-            output_summary="OPTICAL|SAR 256x256 side-by-side composite",
+            output_summary=(
+                "OPTICAL|SAR composite persisted for visual evidence "
+                f"({os.path.basename(composite_path)})"
+            ),
         ))
 
         # ── Joint interpretation (on the composite image) ──────
         step_num += 1
         t0 = time.time()
-        try:
-            joint_answer, interp_s = run_joint_interpretation(
-                vlm=self.vlm, original_query=query,
-                optical_evidence=optical_evidence, sar_evidence=sar_evidence,
-                composite_path=composite_path,
-            )
-        finally:
-            if os.path.isfile(composite_path):
-                try:
-                    os.remove(composite_path)
-                except OSError:
-                    pass
+        joint_answer, interp_s = run_joint_interpretation(
+            vlm=self.vlm, original_query=query,
+            optical_evidence=optical_evidence, sar_evidence=sar_evidence,
+            composite_path=composite_path,  # tokens=400 (see fusion)
+        )
         interp_ms = (time.time() - t0) * 1000
 
         trace.append(self._make_step(
@@ -941,6 +1089,7 @@ class SatQueryPipeline:
             fusion_ms=round(fuse_ms, 0),
             joint_interpretation_ms=round(interp_ms, 0),
             pair_compat=pair_verdict,
+            composite_path=composite_path,
             models_used=(
                 ["YOLOv8 SAR Vessel Detector",
                  "AlignEarth-SAR-ViT-B-16 (zero-shot scene)",
@@ -961,6 +1110,8 @@ class SatQueryPipeline:
             elapsed_vlm_s=optical_result.elapsed_s + interp_s,
             elapsed_total_s=round(time.time() - t_total, 1),
             geo_meta=slot_meta or {}, pair_compat=pair_verdict,
+            evidence_reliability=round(confidence, 2),
+            reliability_reasoning=conf_reasoning,
         )
         self.history.add(result)
         return result

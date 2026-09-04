@@ -40,10 +40,23 @@ export function VisualEvidence({
     );
   }
 
-  // Joint analysis — show both annotated images if available
+  // Joint analysis — show the exact OPTICAL|SAR composite the joint
+  // interpretation used, plus the source optical image
   if (intent === 'joint_analysis' && jointResult) {
     return (
       <div className="space-y-2 animate-scale-in">
+        {jointResult.composite_url && (
+          <div className="rounded-lg overflow-hidden border border-accent-teal/30">
+            <img
+              src={jointResult.composite_url}
+              alt="OPTICAL | SAR composite"
+              className="w-full rounded-lg"
+            />
+            <div className="px-2 py-1 bg-bg-card text-[10px] text-text-muted text-center">
+              OPTICAL | SAR composite — evidence used by the joint interpretation
+            </div>
+          </div>
+        )}
         {originalImageUrl && (
           <div className="rounded-lg overflow-hidden border border-border">
             <img

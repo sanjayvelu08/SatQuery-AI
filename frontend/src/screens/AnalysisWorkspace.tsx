@@ -1,6 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
-  Upload, X, Search, Loader2, AlertTriangle, ChevronDown,
+  Upload, X, Search, Loader2, AlertTriangle, ChevronDown, Shield,
   Image as ImageIcon, MessageSquare, BarChart3, GitCompare, Radio,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
@@ -625,6 +625,27 @@ export function AnalysisWorkspace({
                     {formatTiming(result.elapsed_route_ms, result.elapsed_vlm_s, result.elapsed_total_s)}
                   </span>
                 </div>
+
+                {/* Evidence reliability (deterministic — NOT prediction accuracy) */}
+                {result.summary?.evidence_reliability != null && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-text-secondary pt-1.5">
+                    <Shield className="w-3 h-3 text-accent-teal shrink-0" />
+                    <span className="font-medium shrink-0">
+                      Evidence reliability {Math.round(result.summary.evidence_reliability * 100)}%
+                    </span>
+                    {result.summary.reliability_reasoning && (
+                      <span className="text-text-muted truncate min-w-0">
+                        — {result.summary.reliability_reasoning}
+                      </span>
+                    )}
+                  </div>
+                )}
+                {result.summary?.reliability_note && result.summary.evidence_reliability == null && (
+                  <div className="flex items-center gap-1.5 text-[11px] text-text-muted pt-1.5">
+                    <Shield className="w-3 h-3 shrink-0" />
+                    <span className="truncate min-w-0">{result.summary.reliability_note}</span>
+                  </div>
+                )}
 
                 {/* SAR VRAM */}
                 {result.sar_result?.success && result.sar_result.gpu_vram_mb > 0 && (

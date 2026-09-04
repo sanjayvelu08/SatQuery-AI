@@ -167,12 +167,10 @@ def classify(query: str) -> RouteResult:
     if primary == "sar":
         return RouteResult(
             query=query, primary_intent=primary, all_intents=all_intents,
-            prompt=None, supported=False,
+            prompt=None, supported=True,
             reason=(
-                "SAR (Synthetic Aperture Radar) analysis requires specialized "
-                "models that are not yet integrated. "
-                "Currently only optical satellite imagery is supported. "
-                "Try uploading an optical/Sentinel-2 image instead."
+                "SAR analysis is dispatched to the YOLOv8 SAR vessel "
+                "specialist (single-image SAR mode)."
             ),
         )
 

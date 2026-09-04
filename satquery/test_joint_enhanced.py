@@ -123,6 +123,10 @@ class TestPairAwareRouting(unittest.TestCase):
         self.assertIn("=== SAR EVIDENCE", interp_call["prompt"])
         self.assertIn("=== DERIVED INDICATORS", interp_call["prompt"])
         self.assertIn("=== UNCERTAIN OR INFERRED", interp_call["prompt"])
+        # the joint composite is now persisted visual evidence — tidy up
+        jr = result.joint_result
+        if jr and jr.composite_path and os.path.isfile(jr.composite_path):
+            os.remove(jr.composite_path)
 
 
 class TestSAREvidence(unittest.TestCase):
@@ -287,6 +291,64 @@ class TestJointExecution(unittest.TestCase):
         finally:
             if os.path.exists(composite):
                 os.remove(composite)
+
+
+class TestJointEvidencePersistence(unittest.TestCase):
+    """The OPTICAL|SAR composite must be persisted as visual evidence and
+    surfaced as composite_url, not deleted after interpretation."""
+
+    def _run_joint(self):
+        opt = _tmp_image("p_opt.png", color=(20, 90, 20))
+        sar = _tmp_image("p_sar.png", color=(70, 70, 70))
+        pipe = SatQueryPipeline(vlm=FakeVLM())
+        with mock.patch("satquery.pipeline.run_sar_detection",
+                        return_value=FAKE_SAR_RAW), \
+             mock.patch("satquery.pipeline.format_sar_response",
+                        return_value="1 vessel(s) detected."), \
+             mock.patch("satquery.pipeline.run_sarclip_scene",
+                        side_effect=fake_sarclip), \
+             mock.patch("satquery.pipeline.otsu_intensity_indicators",
+                        return_value={"threshold": 95, "dark_fraction": 0.7,
+                                      "bright_fraction": 0.1,
+                                      "dark_components_ge50": 1,
+                                      "usable_mask": True}):
+            return pipe.run(
+                opt, "Use the optical and SAR images together to identify "
+                "built-up and water-covered regions.",
+                image_sar_path=sar)
+
+    def test_composite_persisted_and_url(self):
+        r = self._run_joint()
+        jr = r.joint_result
+        self.assertTrue(jr.composite_path)
+        self.assertTrue(os.path.isfile(jr.composite_path),
+                        "composite must persist after interpretation")
+        try:
+            d = jr.to_dict()
+            self.assertTrue(d["composite_url"].startswith("/changes/"))
+            # reliability mirrors the joint confidence, deterministically
+            self.assertIsNotNone(r.evidence_reliability)
+            self.assertGreaterEqual(r.evidence_reliability, 0.0)
+            self.assertLessEqual(r.evidence_reliability, 1.0)
+            self.assertTrue(r.reliability_reasoning)
+        finally:
+            os.remove(jr.composite_path)
+
+    def test_trace_records_configured_parameters(self):
+        r = self._run_joint()
+        jr = r.joint_result
+        try:
+            by_name = {t.name: t for t in r.trace}
+            self.assertIn("conf=0.25", by_name["sar_detect"].input_summary)
+            self.assertIn("labels=coarse+fine",
+                          by_name["sarclip_scene"].input_summary)
+            self.assertIn("tokens=50 beams=2",
+                          by_name["optical_analyze"].input_summary)
+            self.assertIn("pair_composite", by_name)
+            self.assertIn("composite", by_name["pair_composite"].output_summary)
+        finally:
+            if jr.composite_path and os.path.isfile(jr.composite_path):
+                os.remove(jr.composite_path)
 
 
 if __name__ == "__main__":

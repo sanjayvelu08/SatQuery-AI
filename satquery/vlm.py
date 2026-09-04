@@ -35,6 +35,10 @@ class InferenceResult:
     elapsed_s: float
     image_path: str
     model_loaded: bool
+    # Which LoRA adapter / base precision the worker actually used
+    # (auditability; None = not reported by the worker).
+    adapter_used: Optional[str] = None
+    precision: Optional[str] = None
 
 
 class SatQueryVLM:
@@ -107,6 +111,8 @@ class SatQueryVLM:
                 elapsed_s=elapsed,
                 image_path=image_path,
                 model_loaded=True,
+                adapter_used=result.adapter_used,
+                precision=result.precision,
             )
         else:
             return InferenceResult(
@@ -116,6 +122,8 @@ class SatQueryVLM:
                 elapsed_s=elapsed,
                 image_path=image_path,
                 model_loaded=False,
+                adapter_used=result.adapter_used,
+                precision=result.precision,
             )
 
     # ── VRAM info ─────────────────────────────────────────────────

@@ -25,7 +25,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from satquery.pipeline import SatQueryPipeline
+from satquery.pipeline import SatQueryPipeline, build_result_summary
 from satquery.demos import get_demo_list, get_demo_by_name
 from satquery.visualize import create_annotated_image
 from satquery.vlm import SatQueryVLM
@@ -201,6 +201,21 @@ async def analyze(
             "elapsed_total_s": 0,
             "sar_result": None,
             "trace": [],
+            "summary": {
+                "query": demo_data["query"],
+                "intent": demo_data["intent"],
+                "models_used": demo_data.get("model_used", ""),
+                "evidence_reliability": None,
+                "reliability_reasoning": None,
+                "reliability_note": (
+                    "pre-recorded demo result"
+                    if not demo_data.get("supported", True)
+                    else "qualitative model result \u2014 reliability not quantified"
+                ),
+                "warnings": [] if demo_data.get("supported", True) else [
+                    demo_data.get("unsupported_reason", "unsupported")],
+                "trace_step_count": 0,
+            },
         }
 
     # ── Live mode ───────────────────────────────────────────────
@@ -270,9 +285,11 @@ async def analyze(
                     "status": t.status, "duration_ms": t.duration_ms,
                     "input_summary": t.input_summary,
                     "output_summary": t.output_summary,
+                    "error": t.error,
                 }
                 for t in result.trace
             ],
+            "summary": build_result_summary(result),
         }
 
     except Exception as e:

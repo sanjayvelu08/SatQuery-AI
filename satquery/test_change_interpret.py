@@ -305,6 +305,10 @@ class ChangeInterpretationTests(unittest.TestCase):
         self.assertNotIn("bit_cd_detect", names)
         # optical + joint interpretation = exactly two EarthDial calls
         self.assertEqual(len(vlm.calls), 2)
+        # joint composite is now persisted visual evidence — tidy up
+        jr = r.joint_result
+        if jr and jr.composite_path and os.path.isfile(jr.composite_path):
+            os.remove(jr.composite_path)
 
     # ── H. Composite generation ───────────────────────────────────
     def test_h_composite_has_both_halves_and_is_deterministic(self):

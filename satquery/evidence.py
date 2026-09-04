@@ -108,6 +108,9 @@ class JointAnalysisResult:
     error: Optional[str] = None
     # check_pair_compat() verdict for the optical+SAR pair, when evaluated.
     pair_compat: Optional[dict] = None
+    # Persisted OPTICAL | SAR composite used for the joint interpretation call
+    # (served static artifact — kept for visual evidence, unlike intermediates).
+    composite_path: Optional[str] = None
 
     def format_markdown(self) -> str:
         """Human-readable markdown output.
@@ -258,6 +261,10 @@ class JointAnalysisResult:
             }
         if self.pair_compat:
             d["pair_compat"] = self.pair_compat
+        if self.composite_path:
+            import os as _os
+            d["composite_url"] = (
+                f"/changes/{_os.path.basename(self.composite_path)}")
         if self.optical_evidence:
             d["optical"] = {
                 "success": self.optical_evidence.success,
